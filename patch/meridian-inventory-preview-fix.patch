@@ -1,0 +1,2007 @@
+diff --git a/src/UIPlatform/Menus/NativeSurfaceMenu.cpp b/src/UIPlatform/Menus/NativeSurfaceMenu.cpp
+index e3e07bc..ccbfdcf 100644
+--- a/src/UIPlatform/Menus/NativeSurfaceMenu.cpp
++++ b/src/UIPlatform/Menus/NativeSurfaceMenu.cpp
+@@ -105,10 +105,17 @@ namespace Meridian::Menus
+ 
+         // The checkerboard is a diagnostic for an empty native surface, not
+         // inventory content. Pending/failed models leave the game visible.
++        const auto status = m_nifPreviewRenderer.GetStatus();
++        if (status == Meridian::UI::NifView::Status::Loading)
++        {
++            // Aetherius: preserva o ultimo frame valido enquanto um reload/troca esta em
++            // andamento, evitando que o item pisque durante sincronizacoes periodicas.
++            return;
++        }
+         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+-        if (m_nifPreviewRenderer.GetStatus() == Meridian::UI::NifView::Status::Empty)
++        if (status == Meridian::UI::NifView::Status::Empty)
+             view = m_checkerboardView;
+-        if (m_nifPreviewRenderer.GetStatus() == Meridian::UI::NifView::Status::Ready)
++        if (status == Meridian::UI::NifView::Status::Ready)
+         {
+             const auto modelView = m_nifPreviewRenderer.GetSurfaceView();
+             if (modelView != nullptr)
+diff --git a/src/UIPlatform/Render/NifLighting.h b/src/UIPlatform/Render/NifLighting.h
+index f1c3f6d..fe57ccd 100644
+--- a/src/UIPlatform/Render/NifLighting.h
++++ b/src/UIPlatform/Render/NifLighting.h
+@@ -60,32 +60,36 @@ namespace Meridian::Render::NifPreview
+             switch (a_preset)
+             {
+             case LightingPreset::Bright:
++                // Aetherius: AetheriusUIBridge utiliza LightingPreset::Bright na previa do
++                // inventario. Calibrado em espaco linear para manter metais escuros (Adaga de
++                // Ferro, Elmo Daedrico) e madeira (Sopas) perfeitamente legiveis, sem lavar
++                // texturas claras (rolha/corda) nem introduzir dominante azulada.
+                 return {
+-                    .ambientTop = {0.45f, 0.48f, 0.54f},
+-                    .ambientBottom = {0.18f, 0.20f, 0.24f},
+-                    .lightColor = {{{1.18f, 1.10f, 0.98f},
+-                                    {0.62f, 0.70f, 0.84f},
+-                                    {0.34f, 0.36f, 0.42f}}},
+-                    .baseExposureStops = 0.45f,
++                    .ambientTop = {0.34f, 0.33f, 0.31f},
++                    .ambientBottom = {0.16f, 0.155f, 0.15f},
++                    .lightColor = {{{0.92f, 0.87f, 0.80f},
++                                    {0.38f, 0.38f, 0.39f},
++                                    {0.30f, 0.30f, 0.32f}}},
++                    .baseExposureStops = 0.0f,
+                 };
+             case LightingPreset::Dramatic:
+                 return {
+-                    .ambientTop = {0.13f, 0.14f, 0.17f},
+-                    .ambientBottom = {0.025f, 0.03f, 0.045f},
+-                    .lightColor = {{{1.30f, 1.12f, 0.90f},
+-                                    {0.12f, 0.16f, 0.24f},
+-                                    {0.62f, 0.70f, 0.86f}}},
++                    .ambientTop = {0.12f, 0.12f, 0.14f},
++                    .ambientBottom = {0.025f, 0.028f, 0.038f},
++                    .lightColor = {{{1.12f, 0.96f, 0.78f},
++                                    {0.12f, 0.14f, 0.20f},
++                                    {0.52f, 0.58f, 0.70f}}},
+                     .baseExposureStops = 0.05f,
+                 };
+             case LightingPreset::Neutral:
+             default:
+                 return {
+-                    .ambientTop = {0.32f, 0.35f, 0.40f},
+-                    .ambientBottom = {0.10f, 0.12f, 0.16f},
+-                    .lightColor = {{{1.08f, 1.01f, 0.91f},
+-                                    {0.43f, 0.50f, 0.61f},
+-                                    {0.28f, 0.31f, 0.37f}}},
+-                    .baseExposureStops = 0.15f,
++                    .ambientTop = {0.28f, 0.27f, 0.26f},
++                    .ambientBottom = {0.12f, 0.12f, 0.12f},
++                    .lightColor = {{{0.84f, 0.80f, 0.74f},
++                                    {0.32f, 0.32f, 0.33f},
++                                    {0.24f, 0.24f, 0.26f}}},
++                    .baseExposureStops = -0.08f,
+                 };
+             }
+         }
+diff --git a/src/UIPlatform/Render/NifPreviewMesh.h b/src/UIPlatform/Render/NifPreviewMesh.h
+index 3d1733d..c39147f 100644
+--- a/src/UIPlatform/Render/NifPreviewMesh.h
++++ b/src/UIPlatform/Render/NifPreviewMesh.h
+@@ -24,6 +24,7 @@ namespace Meridian::Render::NifPreview
+         FaceGen,
+         FaceGenRgbTint,
+         HairTint,
++        Effect,
+     };
+ 
+     struct Float2
+@@ -90,10 +91,140 @@ namespace Meridian::Render::NifPreview
+         Float3 normal{0.0f, 0.0f, 1.0f};
+         Float4 tangent{1.0f, 0.0f, 0.0f, 1.0f};
+         Float2 textureCoordinate{};
++        Float4 color{1.0f, 1.0f, 1.0f, 1.0f};
+         std::array<float, 4> boneWeights{};
+         std::array<std::uint16_t, 4> boneIndices{};
+     };
+ 
++    enum class PreviewAnimationTarget : std::uint8_t
++    {
++        UOffset = 0,
++        VOffset,
++        UScale,
++        VScale,
++        Alpha,
++        EmissiveMultiple,
++        SpecularStrength,
++        EnvironmentScale,
++        Glossiness,
++        FalloffStartAngle,
++        FalloffStopAngle,
++        FalloffStartOpacity,
++        FalloffStopOpacity,
++    };
++
++    enum class PreviewAnimationCycle : std::uint8_t
++    {
++        Loop = 0,
++        Reverse,
++        Clamp,
++    };
++
++    struct PreviewFloatKey
++    {
++        float time = 0.0f;
++        float value = 0.0f;
++    };
++
++    struct PreviewFloatTrack
++    {
++        PreviewAnimationTarget target = PreviewAnimationTarget::VOffset;
++        PreviewAnimationCycle cycle = PreviewAnimationCycle::Loop;
++        float frequency = 1.0f;
++        float phase = 0.0f;
++        float startTime = 0.0f;
++        float stopTime = 0.0f;
++        std::vector<PreviewFloatKey> keys;
++    };
++
++    inline bool EvaluateFloatTrack(const PreviewFloatTrack& a_track,
++                                   float a_elapsedSeconds,
++                                   float& a_outValue)
++    {
++        if (a_track.keys.empty())
++        {
++            return false;
++        }
++        if (a_track.keys.size() == 1)
++        {
++            const float v = a_track.keys.front().value;
++            if (!std::isfinite(v))
++            {
++                return false;
++            }
++            a_outValue = v;
++            return true;
++        }
++
++        const float freq = std::isfinite(a_track.frequency) ? a_track.frequency : 1.0f;
++        const float phase = std::isfinite(a_track.phase) ? a_track.phase : 0.0f;
++        const float rawTime = a_elapsedSeconds * freq + phase;
++        const float start = std::isfinite(a_track.startTime) ? a_track.startTime : a_track.keys.front().time;
++        const float stop = (std::isfinite(a_track.stopTime) && a_track.stopTime > start)
++            ? a_track.stopTime
++            : a_track.keys.back().time;
++        const float duration = stop - start;
++
++        float sampleTime = rawTime;
++        if (duration > 1.0e-5f)
++        {
++            if (a_track.cycle == PreviewAnimationCycle::Loop)
++            {
++                float wrapped = std::fmod(rawTime - start, duration);
++                if (wrapped < 0.0f)
++                {
++                    wrapped += duration;
++                }
++                sampleTime = start + wrapped;
++            }
++            else if (a_track.cycle == PreviewAnimationCycle::Reverse)
++            {
++                const float period = duration * 2.0f;
++                float wrapped = std::fmod(rawTime - start, period);
++                if (wrapped < 0.0f)
++                {
++                    wrapped += period;
++                }
++                sampleTime = wrapped <= duration ? (start + wrapped) : (stop - (wrapped - duration));
++            }
++            else
++            {
++                sampleTime = std::clamp(rawTime, start, stop);
++            }
++        }
++        else
++        {
++            sampleTime = start;
++        }
++
++        if (sampleTime <= a_track.keys.front().time)
++        {
++            a_outValue = a_track.keys.front().value;
++            return std::isfinite(a_outValue);
++        }
++        if (sampleTime >= a_track.keys.back().time)
++        {
++            a_outValue = a_track.keys.back().value;
++            return std::isfinite(a_outValue);
++        }
++
++        for (std::size_t i = 0; i + 1 < a_track.keys.size(); ++i)
++        {
++            const auto& k0 = a_track.keys[i];
++            const auto& k1 = a_track.keys[i + 1];
++            if (sampleTime <= k1.time)
++            {
++                const float span = k1.time - k0.time;
++                const float t = span > 1.0e-6f ? std::clamp((sampleTime - k0.time) / span, 0.0f, 1.0f) : 0.0f;
++                a_outValue = k0.value + (k1.value - k0.value) * t;
++                return std::isfinite(a_outValue);
++            }
++        }
++
++        a_outValue = a_track.keys.back().value;
++        return std::isfinite(a_outValue);
++    }
++
+     struct PreviewMaterial
+     {
+         std::string diffuseTexturePath;
+@@ -101,6 +232,7 @@ namespace Meridian::Render::NifPreview
+         std::string specularTexturePath;
+         std::string environmentTexturePath;
+         std::string environmentMaskTexturePath;
++        std::string glowTexturePath;
+         std::string faceTintTexturePath;
+         std::string faceDetailTexturePath;
+         std::string faceSubsurfaceTexturePath;
+@@ -108,23 +240,41 @@ namespace Meridian::Render::NifPreview
+         Float2 textureScale{1.0f, 1.0f};
+         Float3 specularColor{1.0f, 1.0f, 1.0f};
+         Float3 tintColor{1.0f, 1.0f, 1.0f};
++        Float3 emissiveColor{0.0f, 0.0f, 0.0f};
+         float opacity = 1.0f;
+         float alphaThreshold = 0.0f;
+         float specularPower = 1.0f;
+         float specularStrength = 1.0f;
+         float environmentScale = 0.0f;
++        float emissiveMultiple = 0.0f;
++        float falloffStartAngle = 1.0f;
++        float falloffStopAngle = 0.0f;
++        float falloffStartOpacity = 1.0f;
++        float falloffStopOpacity = 1.0f;
+         bool alphaBlend = false;
+         bool alphaTest = false;
++        bool additiveBlend = false;
+         bool premultipliedAlpha = false;
+         bool specularEnabled = false;
+         bool tangentSpaceNormal = false;
+         bool modelSpaceNormal = false;
+         bool environmentEnabled = false;
++        bool envmapLightFade = false;
++        bool vertexColors = false;
++        bool vertexAlpha = false;
++        bool ownEmit = false;
++        bool glowMapEnabled = false;
++        bool effectShader = false;
++        bool effectLighting = false;
++        bool grayscaleToPaletteColor = false;
++        bool grayscaleToPaletteAlpha = false;
++        bool falloffEnabled = false;
+         PreviewMaterialFeature feature = PreviewMaterialFeature::Generic;
+         MaterialTintKind tintKind = MaterialTintKind::None;
+         // Unsupported shaders keep the historical no-cull behavior so a
+         // missing material never makes otherwise valid geometry disappear.
+         bool twoSided = true;
++        std::vector<PreviewFloatTrack> floatTracks;
+     };
+ 
+     struct PreviewDrawRange
+diff --git a/src/UIPlatform/Render/NifPreviewRenderer.cpp b/src/UIPlatform/Render/NifPreviewRenderer.cpp
+index aae405a..e8b9515 100644
+--- a/src/UIPlatform/Render/NifPreviewRenderer.cpp
++++ b/src/UIPlatform/Render/NifPreviewRenderer.cpp
+@@ -41,6 +41,18 @@ namespace Meridian::Render::NifPreview
+         constexpr std::uint32_t MATERIAL_FACEGEN = 0x80u;
+         constexpr std::uint32_t MATERIAL_FACEGEN_RGB_TINT = 0x100u;
+         constexpr std::uint32_t MATERIAL_TEXTURE_ALPHA = 0x200u;
++        constexpr std::uint32_t MATERIAL_VERTEX_COLORS = 0x400u;
++        constexpr std::uint32_t MATERIAL_VERTEX_ALPHA = 0x800u;
++        constexpr std::uint32_t MATERIAL_GLOW_MAP = 0x1000u;
++        constexpr std::uint32_t MATERIAL_OWN_EMIT = 0x2000u;
++        constexpr std::uint32_t MATERIAL_ENVIRONMENT_MASK_MAP = 0x4000u;
++        constexpr std::uint32_t MATERIAL_EFFECT_SHADER = 0x8000u;
++        constexpr std::uint32_t MATERIAL_EFFECT_LIGHTING = 0x10000u;
++        constexpr std::uint32_t MATERIAL_GRAYSCALE_COLOR = 0x20000u;
++        constexpr std::uint32_t MATERIAL_GRAYSCALE_ALPHA = 0x40000u;
++        constexpr std::uint32_t MATERIAL_FALLOFF = 0x80000u;
++        constexpr std::uint32_t MATERIAL_ADDITIVE_BLEND = 0x100000u;
++        constexpr std::uint32_t MATERIAL_ENVMAP_LIGHT_FADE = 0x200000u;
+ 
+         struct GpuVertex
+         {
+@@ -48,6 +60,7 @@ namespace Meridian::Render::NifPreview
+             ::DirectX::XMFLOAT3 normal;
+             ::DirectX::XMFLOAT4 tangent;
+             ::DirectX::XMFLOAT2 textureCoordinate;
++            ::DirectX::XMFLOAT4 color;
+         };
+ 
+         struct alignas(16) SceneConstants
+@@ -66,6 +79,9 @@ namespace Meridian::Render::NifPreview
+             ::DirectX::XMFLOAT4 specularColorPower;
+             ::DirectX::XMFLOAT4 materialParams;
+             ::DirectX::XMFLOAT4 tintColor;
++            ::DirectX::XMFLOAT4 emissiveColorScale;
++            ::DirectX::XMFLOAT4 falloffParams;
++            ::DirectX::XMFLOAT4 uvTransform;
+             std::uint32_t materialFlags = 0;
+             std::uint32_t padding[3]{};
+         };
+@@ -96,7 +112,9 @@ namespace Meridian::Render::NifPreview
+         m_sceneConstantBuffer.Reset();
+         m_materialConstantBuffer.Reset();
+         m_fallbackWhiteTexture.Reset();
++        m_fallbackBlackTexture.Reset();
+         m_fallbackNormalTexture.Reset();
++        m_additiveBlendState.Reset();
+         m_states.reset();
+         m_platformDevice.reset();
+     }
+@@ -591,9 +609,26 @@ namespace Meridian::Render::NifPreview
+         }
+ 
+         const bool targetChanged = targetWidth != m_targetWidth || targetHeight != m_targetHeight;
+-        if (targetChanged || m_cameraDirty.exchange(false, std::memory_order_acq_rel))
++        const bool cameraChanged = m_cameraDirty.exchange(false, std::memory_order_acq_rel);
++        bool animationTick = false;
++        if (m_hasAnimatedMaterials && !targetChanged && !cameraChanged)
+         {
+-            if (!RenderFrame(targetWidth, targetHeight))
++            const auto now = std::chrono::steady_clock::now();
++            if (now - m_lastAnimationRenderTime >= std::chrono::milliseconds(33))
++            {
++                animationTick = true;
++            }
++        }
++        if (targetChanged || cameraChanged || animationTick)
++        {
++            if (RenderFrame(targetWidth, targetHeight))
++            {
++                if (m_hasAnimatedMaterials)
++                {
++                    m_lastAnimationRenderTime = std::chrono::steady_clock::now();
++                }
++            }
++            else
+             {
+                 m_status.store(Meridian::UI::NifView::Status::Failed, std::memory_order_release);
+             }
+@@ -661,6 +696,7 @@ namespace Meridian::Render::NifPreview
+                 {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, static_cast<UINT>(offsetof(GpuVertex, normal)), D3D11_INPUT_PER_VERTEX_DATA, 0},
+                 {"TANGENT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, static_cast<UINT>(offsetof(GpuVertex, tangent)), D3D11_INPUT_PER_VERTEX_DATA, 0},
+                 {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, static_cast<UINT>(offsetof(GpuVertex, textureCoordinate)), D3D11_INPUT_PER_VERTEX_DATA, 0},
++                {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, static_cast<UINT>(offsetof(GpuVertex, color)), D3D11_INPUT_PER_VERTEX_DATA, 0},
+             };
+             Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
+             if (FAILED(platformDevice->Device()->CreateInputLayout(
+@@ -696,8 +732,10 @@ namespace Meridian::Render::NifPreview
+             };
+ 
+             Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> fallbackWhiteTexture;
++            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> fallbackBlackTexture;
+             Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> fallbackNormalTexture;
+             if (!createFallbackTexture(0xFFFFFFFFu, fallbackWhiteTexture) ||
++                !createFallbackTexture(0xFF000000u, fallbackBlackTexture) ||
+                 !createFallbackTexture(0xFFFF8080u, fallbackNormalTexture))
+             {
+                 spdlog::error("{}: private-device fallback material textures failed",
+@@ -705,6 +743,24 @@ namespace Meridian::Render::NifPreview
+                 return false;
+             }
+ 
++            D3D11_BLEND_DESC additiveDesc{};
++            additiveDesc.RenderTarget[0].BlendEnable = TRUE;
++            additiveDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
++            additiveDesc.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
++            additiveDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
++            additiveDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ZERO;
++            additiveDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
++            additiveDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
++            additiveDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
++            Microsoft::WRL::ComPtr<ID3D11BlendState> additiveBlendState;
++            if (FAILED(platformDevice->Device()->CreateBlendState(
++                    &additiveDesc, additiveBlendState.GetAddressOf())))
++            {
++                spdlog::error("{}: private-device additive blend state creation failed",
++                              NameOf(NifPreviewRenderer));
++                return false;
++            }
++
+             const auto createConstantBuffer = [&](UINT a_size,
+                                                   Microsoft::WRL::ComPtr<ID3D11Buffer>& a_buffer) {
+                 D3D11_BUFFER_DESC desc{};
+@@ -739,7 +795,9 @@ namespace Meridian::Render::NifPreview
+             m_sceneConstantBuffer = std::move(sceneConstantBuffer);
+             m_materialConstantBuffer = std::move(materialConstantBuffer);
+             m_fallbackWhiteTexture = std::move(fallbackWhiteTexture);
++            m_fallbackBlackTexture = std::move(fallbackBlackTexture);
+             m_fallbackNormalTexture = std::move(fallbackNormalTexture);
++            m_additiveBlendState = std::move(additiveBlendState);
+             m_transportReady = true;
+         }
+         catch (const std::exception& error)
+@@ -754,7 +812,8 @@ namespace Meridian::Render::NifPreview
+         ID3D11Device* a_device,
+         std::string_view a_path,
+         bool a_srgb,
+-        bool a_requireCube)
++        bool a_requireCube,
++        bool a_respectFileFormat)
+     {
+         if (a_device == nullptr || a_path.empty())
+         {
+@@ -770,7 +829,7 @@ namespace Meridian::Render::NifPreview
+             return nullptr;
+         }
+         const auto cacheKey = normalizedPath +
+-                              (a_srgb ? "|srgb" : "|linear") +
++                              (a_respectFileFormat ? "|native" : (a_srgb ? "|srgb" : "|linear")) +
+                               (a_requireCube ? "|cube" : "|2d");
+         if (const auto cached = m_textureCache.find(cacheKey); cached != m_textureCache.end())
+         {
+@@ -782,7 +841,12 @@ namespace Meridian::Render::NifPreview
+         if (resource.error == TextureReadError::None)
+         {
+             ::DirectX::DDS_ALPHA_MODE ddsAlpha = ::DirectX::DDS_ALPHA_MODE_UNKNOWN;
+-            const auto flags = a_srgb ? ::DirectX::DDS_LOADER_FORCE_SRGB : ::DirectX::DDS_LOADER_IGNORE_SRGB;
++            // Aetherius: o Creation Engine do Skyrim SE respeita o formato DXGI salvo no DDS
++            // (BC7_UNORM_SRGB para texturas/normais salvos em sRGB, BC1/BC3_UNORM para DXT),
++            // evitando normais inclinados em BC7_SRGB (cork_n/twine_n) e dupla conversao de cor.
++            const auto flags = a_respectFileFormat
++                ? ::DirectX::DDS_LOADER_DEFAULT
++                : (a_srgb ? ::DirectX::DDS_LOADER_FORCE_SRGB : ::DirectX::DDS_LOADER_IGNORE_SRGB);
+             const auto hr = ::DirectX::CreateDDSTextureFromMemoryEx(
+                 a_device,
+                 resource.bytes.data(),
+@@ -853,6 +917,7 @@ namespace Meridian::Render::NifPreview
+                 {vertex.normal.x, vertex.normal.y, vertex.normal.z},
+                 {vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, vertex.tangent.w},
+                 {vertex.textureCoordinate.x, vertex.textureCoordinate.y},
++                {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
+             });
+         }
+ 
+@@ -909,9 +974,17 @@ namespace Meridian::Render::NifPreview
+             loaded.material = draw.material;
+ 
+             loaded.diffuseTexture = LoadTextureResource(
+-                a_device, draw.material.diffuseTexturePath, true, false);
++                a_device, draw.material.diffuseTexturePath, true, false, false);
+             if (!draw.material.diffuseTexturePath.empty() && loaded.diffuseTexture == nullptr)
+             {
++                if (draw.material.effectShader)
++                {
++                    // Um submesh de efeito (BSEffectShaderProperty) cuja textura falhou
++                    // nao deve transformar o efeito em bloco branco nem recusar o item inteiro.
++                    spdlog::warn("NifPreviewRenderer: effect texture '{}' unavailable; skipping effect shape",
++                                 draw.material.diffuseTexturePath);
++                    continue;
++                }
+                 // An explicit diffuse that failed to load is not an untextured
+                 // mesh. Do not present the white fallback as the item's look.
+                 spdlog::warn("NifPreviewRenderer: diffuse texture '{}' unavailable; preview refused",
+@@ -921,24 +994,32 @@ namespace Meridian::Render::NifPreview
+             }
+             if (draw.material.tangentSpaceNormal || draw.material.modelSpaceNormal)
+             {
++                // Normal maps respeitam o formato DXGI do DDS (BC7_UNORM_SRGB em cork_n/twine_n
++                // e BC1/BC3/BC5_UNORM nos demais), evitando inclinacao falsa das normais.
+                 loaded.normalTexture = LoadTextureResource(
+-                    a_device, draw.material.normalTexturePath, false, false);
++                    a_device, draw.material.normalTexturePath, false, false, true);
+             }
+             loaded.specularTexture = LoadTextureResource(
+-                a_device, draw.material.specularTexturePath, false, false);
++                a_device, draw.material.specularTexturePath, false, false, false);
+             if (draw.material.environmentEnabled)
+             {
+                 loaded.environmentTexture = LoadTextureResource(
+-                    a_device, draw.material.environmentTexturePath, true, true);
++                    a_device, draw.material.environmentTexturePath, true, true, false);
+                 loaded.environmentMaskTexture = LoadTextureResource(
+-                    a_device, draw.material.environmentMaskTexturePath, false, false);
++                    a_device, draw.material.environmentMaskTexturePath, false, false, false);
++            }
++            if ((draw.material.glowMapEnabled || draw.material.effectShader) &&
++                !draw.material.glowTexturePath.empty())
++            {
++                loaded.glowTexture = LoadTextureResource(
++                    a_device, draw.material.glowTexturePath, true, false, false);
+             }
+             if (draw.material.feature == PreviewMaterialFeature::FaceGen)
+             {
+                 loaded.faceTintTexture = LoadTextureResource(
+-                    a_device, draw.material.faceTintTexturePath, true, false);
++                    a_device, draw.material.faceTintTexturePath, true, false, false);
+                 loaded.faceDetailTexture = LoadTextureResource(
+-                    a_device, draw.material.faceDetailTexturePath, true, false);
++                    a_device, draw.material.faceDetailTexturePath, true, false, false);
+             }
+             m_draws.push_back(std::move(loaded));
+         }
+@@ -947,6 +1028,14 @@ namespace Meridian::Render::NifPreview
+             ResetModelResources();
+             return false;
+         }
++        m_hasAnimatedMaterials = std::any_of(
++            m_draws.begin(),
++            m_draws.end(),
++            [](const LoadedDrawRange& a_draw) {
++                return !a_draw.material.floatTracks.empty();
++            });
++        m_animationStartTime = std::chrono::steady_clock::now();
++        m_lastAnimationRenderTime = {};
+         m_bounds = a_mesh.bounds;
+         return true;
+     }
+@@ -1123,6 +1212,16 @@ namespace Meridian::Render::NifPreview
+             context->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
+             context->IASetIndexBuffer(m_indexBuffer.Get(), DXGI_FORMAT_R32_UINT, 0);
+             context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++            const float elapsedSeconds = m_animationTimeOverrideSeconds >= 0.0f
++                ? m_animationTimeOverrideSeconds
++                : std::chrono::duration<float>(
++                      std::chrono::steady_clock::now() - m_animationStartTime)
++                      .count();
++            // Aetherius: renderizacao em duas passadas (opacos/alpha-tested primeiro,
++            // depois transparentes e aditivos) para garantir oclusao correta em frascos,
++            // asas translucidas e auras de efeito.
++            for (const bool translucentPass : {false, true})
++            {
+             for (const auto& draw : m_draws)
+             {
+                 const auto visibility = m_sceneVisibility.find(draw.sceneObject);
+@@ -1130,31 +1229,106 @@ namespace Meridian::Render::NifPreview
+                 {
+                     continue;
+                 }
++                Float2 uvScale = draw.material.textureScale;
++                Float2 uvOffset = draw.material.textureOffset;
++                float opacity = draw.material.opacity;
++                float specularStrength = draw.material.specularStrength;
++                float environmentScale = draw.material.environmentScale;
++                float specularPower = draw.material.specularPower;
++                float emissiveMultiple = draw.material.emissiveMultiple;
++                float falloffStartAngle = draw.material.falloffStartAngle;
++                float falloffStopAngle = draw.material.falloffStopAngle;
++                float falloffStartOpacity = draw.material.falloffStartOpacity;
++                float falloffStopOpacity = draw.material.falloffStopOpacity;
++                for (const auto& track : draw.material.floatTracks)
++                {
++                    float animatedValue = 0.0f;
++                    if (!EvaluateFloatTrack(track, elapsedSeconds, animatedValue))
++                    {
++                        continue;
++                    }
++                    switch (track.target)
++                    {
++                    case PreviewAnimationTarget::UOffset:
++                        uvOffset.x = animatedValue;
++                        break;
++                    case PreviewAnimationTarget::VOffset:
++                        uvOffset.y = animatedValue;
++                        break;
++                    case PreviewAnimationTarget::UScale:
++                        uvScale.x = animatedValue;
++                        break;
++                    case PreviewAnimationTarget::VScale:
++                        uvScale.y = animatedValue;
++                        break;
++                    case PreviewAnimationTarget::Alpha:
++                        opacity = std::clamp(animatedValue, 0.0f, 1.0f);
++                        break;
++                    case PreviewAnimationTarget::EmissiveMultiple:
++                        emissiveMultiple = std::clamp(animatedValue, 0.0f, 16.0f);
++                        break;
++                    case PreviewAnimationTarget::SpecularStrength:
++                        specularStrength = std::clamp(animatedValue, 0.0f, 16.0f);
++                        break;
++                    case PreviewAnimationTarget::EnvironmentScale:
++                        environmentScale = std::clamp(animatedValue, 0.0f, 16.0f);
++                        break;
++                    case PreviewAnimationTarget::Glossiness:
++                        specularPower = std::clamp(animatedValue, 1.0f, 512.0f);
++                        break;
++                    case PreviewAnimationTarget::FalloffStartAngle:
++                        falloffStartAngle = animatedValue;
++                        break;
++                    case PreviewAnimationTarget::FalloffStopAngle:
++                        falloffStopAngle = animatedValue;
++                        break;
++                    case PreviewAnimationTarget::FalloffStartOpacity:
++                        falloffStartOpacity = std::clamp(animatedValue, 0.0f, 1.0f);
++                        break;
++                    case PreviewAnimationTarget::FalloffStopOpacity:
++                        falloffStopOpacity = std::clamp(animatedValue, 0.0f, 1.0f);
++                        break;
++                    default:
++                        break;
++                    }
++                }
+                 const bool usesAlpha = draw.material.alphaBlend ||
+-                                       draw.material.opacity < 0.999f;
+-                context->OMSetBlendState(
+-                    usesAlpha ? m_states->AlphaBlend() : m_states->Opaque(),
+-                    nullptr,
+-                    0xFFFFFFFF);
++                                       draw.material.additiveBlend ||
++                                       opacity < 0.999f;
++                if (usesAlpha != translucentPass)
++                {
++                    continue;
++                }
++                ID3D11BlendState* drawBlend = m_states->Opaque();
++                if (draw.material.additiveBlend && m_additiveBlendState != nullptr)
++                {
++                    drawBlend = m_additiveBlendState.Get();
++                }
++                else if (usesAlpha)
++                {
++                    drawBlend = m_states->AlphaBlend();
++                }
++                context->OMSetBlendState(drawBlend, nullptr, 0xFFFFFFFF);
+                 context->OMSetDepthStencilState(
+                     usesAlpha ? m_states->DepthRead() : m_states->DepthDefault(), 0);
+-                // Aetherius: sem culling. Com LookAtRH/PerspectiveFovRH o CullCounterClockwise
+-                // descartava a frente dos modelos do Skyrim (via-se o lado de dentro: elmo
+-                // preto, botas "girando" cada uma para um lado). O depth buffer resolve a
+-                // ordem; para um item só na prévia o custo de desenhar as duas faces é nulo.
+-                context->RSSetState(m_states->CullNone());
++                // Em draws opacos o Z-buffer resolve a oclusao sem risco de faces invertidas
++                // de mods; em draws transparentes single-sided (ex.: vidro de pocoes) descartamos
++                // as backfaces (CullClockwise com LookAtRH) para nao desenhar a parede interna
++                // por cima do conteudo.
++                context->RSSetState(
++                    (usesAlpha && !draw.material.twoSided) ? m_states->CullClockwise() : m_states->CullNone());
+ 
+                 MaterialConstants materialConstants{};
+                 materialConstants.specularColorPower = {
+                     draw.material.specularColor.x,
+                     draw.material.specularColor.y,
+                     draw.material.specularColor.z,
+-                    draw.material.specularPower,
++                    specularPower,
+                 };
+                 materialConstants.materialParams = {
+-                    draw.material.opacity,
+-                    draw.material.specularStrength,
+-                    draw.material.environmentScale,
++                    opacity,
++                    specularStrength,
++                    environmentScale,
+                     draw.material.alphaThreshold,
+                 };
+                 materialConstants.tintColor = {
+@@ -1163,6 +1337,24 @@ namespace Meridian::Render::NifPreview
+                     draw.material.tintColor.z,
+                     1.0f,
+                 };
++                materialConstants.emissiveColorScale = {
++                    draw.material.emissiveColor.x,
++                    draw.material.emissiveColor.y,
++                    draw.material.emissiveColor.z,
++                    emissiveMultiple,
++                };
++                materialConstants.falloffParams = {
++                    falloffStartAngle,
++                    falloffStopAngle,
++                    falloffStartOpacity,
++                    falloffStopOpacity,
++                };
++                materialConstants.uvTransform = {
++                    uvScale.x,
++                    uvScale.y,
++                    uvOffset.x,
++                    uvOffset.y,
++                };
+                 if (draw.material.tangentSpaceNormal && draw.normalTexture != nullptr)
+                 {
+                     materialConstants.materialFlags |= MATERIAL_NORMAL_MAP;
+@@ -1192,6 +1384,14 @@ namespace Meridian::Render::NifPreview
+                 {
+                     materialConstants.materialFlags |= MATERIAL_ENVIRONMENT_MAP;
+                 }
++                if (draw.material.envmapLightFade)
++                {
++                    materialConstants.materialFlags |= MATERIAL_ENVMAP_LIGHT_FADE;
++                }
++                if (draw.environmentMaskTexture != nullptr)
++                {
++                    materialConstants.materialFlags |= MATERIAL_ENVIRONMENT_MASK_MAP;
++                }
+                 if (draw.material.alphaTest)
+                 {
+                     materialConstants.materialFlags |= MATERIAL_ALPHA_TEST;
+@@ -1200,9 +1400,50 @@ namespace Meridian::Render::NifPreview
+                 {
+                     materialConstants.materialFlags |= MATERIAL_TEXTURE_ALPHA;
+                 }
++                if (draw.material.vertexColors)
++                {
++                    materialConstants.materialFlags |= MATERIAL_VERTEX_COLORS;
++                }
++                if (draw.material.vertexAlpha)
++                {
++                    materialConstants.materialFlags |= MATERIAL_VERTEX_ALPHA;
++                }
++                if (draw.glowTexture != nullptr &&
++                    (draw.material.glowMapEnabled || draw.material.effectShader))
++                {
++                    materialConstants.materialFlags |= MATERIAL_GLOW_MAP;
++                }
++                if (draw.material.ownEmit && emissiveMultiple > 0.0f)
++                {
++                    materialConstants.materialFlags |= MATERIAL_OWN_EMIT;
++                }
++                if (draw.material.effectShader)
++                {
++                    materialConstants.materialFlags |= MATERIAL_EFFECT_SHADER;
++                }
++                if (draw.material.effectLighting)
++                {
++                    materialConstants.materialFlags |= MATERIAL_EFFECT_LIGHTING;
++                }
++                if (draw.material.grayscaleToPaletteColor)
++                {
++                    materialConstants.materialFlags |= MATERIAL_GRAYSCALE_COLOR;
++                }
++                if (draw.material.grayscaleToPaletteAlpha)
++                {
++                    materialConstants.materialFlags |= MATERIAL_GRAYSCALE_ALPHA;
++                }
++                if (draw.material.falloffEnabled)
++                {
++                    materialConstants.materialFlags |= MATERIAL_FALLOFF;
++                }
++                if (draw.material.additiveBlend)
++                {
++                    materialConstants.materialFlags |= MATERIAL_ADDITIVE_BLEND;
++                }
+                 // Always produce premultiplied target pixels for SpriteBatch.
+                 // This is independent of the source NIF's texture convention.
+-                if (usesAlpha)
++                if (usesAlpha && !draw.material.additiveBlend)
+                 {
+                     materialConstants.materialFlags |= MATERIAL_PREMULTIPLIED_ALPHA;
+                 }
+@@ -1217,13 +1458,15 @@ namespace Meridian::Render::NifPreview
+                     draw.environmentMaskTexture != nullptr ? draw.environmentMaskTexture.Get() : m_fallbackWhiteTexture.Get(),
+                     draw.faceTintTexture != nullptr ? draw.faceTintTexture.Get() : m_fallbackWhiteTexture.Get(),
+                     draw.faceDetailTexture != nullptr ? draw.faceDetailTexture.Get() : m_fallbackWhiteTexture.Get(),
++                    draw.glowTexture != nullptr ? draw.glowTexture.Get() : m_fallbackBlackTexture.Get(),
+                 };
+                 context->PSSetShaderResources(
+                     0, static_cast<UINT>(std::size(textures)), textures);
+                 context->DrawIndexed(draw.indexCount, draw.startIndex, 0);
+             }
++            }
+ 
+-            ID3D11ShaderResourceView* nullTextures[7]{};
++            ID3D11ShaderResourceView* nullTextures[8]{};
+             context->PSSetShaderResources(0, static_cast<UINT>(std::size(nullTextures)), nullTextures);
+ 
+             // The source must no longer be bound for output when the transport
+@@ -1251,6 +1494,7 @@ namespace Meridian::Render::NifPreview
+         m_sceneVisibility.clear();
+         m_textureCache.clear();
+         m_bounds = {};
++        m_hasAnimatedMaterials = false;
+         m_cameraDirty.store(false, std::memory_order_release);
+     }
+ }
+diff --git a/src/UIPlatform/Render/NifPreviewRenderer.h b/src/UIPlatform/Render/NifPreviewRenderer.h
+index ed08c1c..6d914d3 100644
+--- a/src/UIPlatform/Render/NifPreviewRenderer.h
++++ b/src/UIPlatform/Render/NifPreviewRenderer.h
+@@ -10,6 +10,7 @@
+ #include "Render/RenderData.h"
+ 
+ #include <atomic>
++#include <chrono>
+ #include <cstdint>
+ #include <memory>
+ #include <mutex>
+@@ -99,6 +100,7 @@ namespace Meridian::Render::NifPreview
+             Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> environmentMaskTexture;
+             Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> faceTintTexture;
+             Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> faceDetailTexture;
++            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> glowTexture;
+         };
+ 
+         bool InitializeGraphics(RenderData& a_renderData,
+@@ -109,7 +111,8 @@ namespace Meridian::Render::NifPreview
+             ID3D11Device* a_device,
+             std::string_view a_path,
+             bool a_srgb,
+-            bool a_requireCube);
++            bool a_requireCube,
++            bool a_respectFileFormat = false);
+         bool EnsureTargets(ID3D11Device* a_device, std::uint32_t a_width, std::uint32_t a_height);
+         bool RenderFrame(std::uint32_t a_width, std::uint32_t a_height);
+         void ResetModelResources();
+@@ -132,6 +135,10 @@ namespace Meridian::Render::NifPreview
+         std::uint32_t m_indexCount = 0;
+         std::uint32_t m_targetWidth = 0;
+         std::uint32_t m_targetHeight = 0;
++        bool m_hasAnimatedMaterials = false;
++        std::chrono::steady_clock::time_point m_animationStartTime{};
++        std::chrono::steady_clock::time_point m_lastAnimationRenderTime{};
++        float m_animationTimeOverrideSeconds = -1.0f;
+ 
+         std::shared_ptr<RenderDevice> m_platformDevice;
+         FrameTransport m_transport;
+@@ -146,7 +153,9 @@ namespace Meridian::Render::NifPreview
+         Microsoft::WRL::ComPtr<ID3D11Buffer> m_vertexBuffer;
+         Microsoft::WRL::ComPtr<ID3D11Buffer> m_indexBuffer;
+         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_fallbackWhiteTexture;
++        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_fallbackBlackTexture;
+         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_fallbackNormalTexture;
++        Microsoft::WRL::ComPtr<ID3D11BlendState> m_additiveBlendState;
+         std::vector<LoadedDrawRange> m_draws;
+         std::unordered_map<Meridian::UI::NifScene::ObjectHandle, bool> m_sceneVisibility;
+         std::unordered_map<std::string, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>>
+diff --git a/src/UIPlatform/Render/NifWeightInterpolation.h b/src/UIPlatform/Render/NifWeightInterpolation.h
+index efb2231..81354d1 100644
+--- a/src/UIPlatform/Render/NifWeightInterpolation.h
++++ b/src/UIPlatform/Render/NifWeightInterpolation.h
+@@ -181,6 +181,12 @@ namespace Meridian::Render::NifPreview
+                 tangent.z,
+                 SelectTangentHandedness(low.tangent.w, high.tangent.w, a_weight),
+             };
++            output.color = {
++                Lerp(low.color.x, high.color.x, a_weight),
++                Lerp(low.color.y, high.color.y, a_weight),
++                Lerp(low.color.z, high.color.z, a_weight),
++                Lerp(low.color.w, high.color.w, a_weight),
++            };
+             result.mesh.bounds.Include(output.position);
+         }
+         return result;
+diff --git a/src/UIPlatform/Render/PackedGeometryDecoder.h b/src/UIPlatform/Render/PackedGeometryDecoder.h
+index 0d09d11..edcef9a 100644
+--- a/src/UIPlatform/Render/PackedGeometryDecoder.h
++++ b/src/UIPlatform/Render/PackedGeometryDecoder.h
+@@ -21,10 +21,12 @@ namespace Meridian::Render::NifPreview
+         std::size_t normalOffset = 0;
+         std::size_t tangentOffset = 0;
+         std::size_t textureCoordinateOffset = 0;
++        std::size_t colorOffset = 0;
+         std::size_t skinningOffset = 0;
+         bool hasPackedNormal = false;
+         bool hasPackedTangent = false;
+         bool hasTextureCoordinate = false;
++        bool hasVertexColor = false;
+         bool hasSkinning = false;
+     };
+ 
+@@ -268,6 +270,9 @@ namespace Meridian::Render::NifPreview
+             (a_layout.hasTextureCoordinate &&
+              (a_layout.textureCoordinateOffset > a_layout.stride ||
+               4 > a_layout.stride - a_layout.textureCoordinateOffset)) ||
++            (a_layout.hasVertexColor &&
++             (a_layout.colorOffset > a_layout.stride ||
++              4 > a_layout.stride - a_layout.colorOffset)) ||
+             (a_layout.hasSkinning &&
+              (a_layout.skinningOffset > a_layout.stride ||
+               12 > a_layout.stride - a_layout.skinningOffset)))
+@@ -346,6 +351,17 @@ namespace Meridian::Render::NifPreview
+                     return result;
+                 }
+             }
++            if (a_layout.hasVertexColor)
++            {
++                constexpr float inv255 = 1.0f / 255.0f;
++                const auto* colorBytes = source + a_layout.colorOffset;
++                vertex.color = {
++                    static_cast<float>(colorBytes[0]) * inv255,
++                    static_cast<float>(colorBytes[1]) * inv255,
++                    static_cast<float>(colorBytes[2]) * inv255,
++                    static_cast<float>(colorBytes[3]) * inv255,
++                };
++            }
+             if (a_layout.hasSkinning)
+             {
+                 for (std::size_t influence = 0; influence < vertex.boneWeights.size(); ++influence)
+diff --git a/src/UIPlatform/Render/RenderHost.cpp b/src/UIPlatform/Render/RenderHost.cpp
+index a00c340..8ca0758 100644
+--- a/src/UIPlatform/Render/RenderHost.cpp
++++ b/src/UIPlatform/Render/RenderHost.cpp
+@@ -542,15 +542,16 @@ namespace Meridian::Render
+                                 0.0f, 1.0f};
+         ctx->RSSetViewports(1, &viewport);
+ 
+-        ID3D11BlendState* blendState = m_renderData.commonStates->NonPremultiplied();
+-        if (g_loadingScreenOpen.load(std::memory_order_acquire))
+-        {
+-            if (auto* noColorWrite = NoColorWriteBlend(m_renderData.device))
+-            {
+-                blendState = noColorWrite;
+-            }
+-        }
+-        m_renderData.spriteBatch->Begin(::DirectX::SpriteSortMode_Deferred, blendState);
++        const bool loadingOpen = g_loadingScreenOpen.load(std::memory_order_acquire);
++        ID3D11BlendState* noColorWrite = loadingOpen ? NoColorWriteBlend(m_renderData.device) : nullptr;
++        ID3D11BlendState* defaultBlend = noColorWrite != nullptr
++            ? noColorWrite
++            : m_renderData.commonStates->NonPremultiplied();
++        ID3D11BlendState* nativeSurfaceBlend = noColorWrite != nullptr
++            ? noColorWrite
++            : m_renderData.commonStates->AlphaBlend();
++        ID3D11BlendState* activeBlend = defaultBlend;
++        m_renderData.spriteBatch->Begin(::DirectX::SpriteSortMode_Deferred, activeBlend);
+         stateGuard.spriteBatchBegun = true;
+         m_renderData.drawLock.Lock();
+         stateGuard.drawLockHeld = true;
+@@ -559,9 +560,33 @@ namespace Meridian::Render
+         {
+             for (const auto& subMenu : menus)
+             {
++                // Aetherius: NativeSurfaceMenu (NifPreviewRenderer) entrega pixels em
++                // premultiplied alpha (incluindo brilho aditivo com alpha=0). Compor com
++                // AlphaBlend evita dupla multiplicacao (alpha^2) no vidro de pocoes e asas.
++                ID3D11BlendState* desiredBlend =
++                    subMenu->GetMenuType() == Meridian::Menus::SubMenuType::NativeSurface
++                        ? nativeSurfaceBlend
++                        : defaultBlend;
++                if (desiredBlend != activeBlend)
++                {
++                    m_renderData.spriteBatch->End();
++                    stateGuard.spriteBatchBegun = false;
++                    m_renderData.spriteBatch->Begin(::DirectX::SpriteSortMode_Deferred, desiredBlend);
++                    stateGuard.spriteBatchBegun = true;
++                    activeBlend = desiredBlend;
++                }
+                 subMenu->Draw();
+             }
+ 
++            if (activeBlend != defaultBlend)
++            {
++                m_renderData.spriteBatch->End();
++                stateGuard.spriteBatchBegun = false;
++                m_renderData.spriteBatch->Begin(::DirectX::SpriteSortMode_Deferred, defaultBlend);
++                stateGuard.spriteBatchBegun = true;
++                activeBlend = defaultBlend;
++            }
++
+             const auto cursorDecision = Meridian::Menus::CursorPolicy::Evaluate(
+                 Meridian::Menus::FocusArbiter::GetSingleton().HasOwner());
+             if (cursorDecision.drawMeridianCursor && Meridian::Services::ControllerInputService::GetSingleton().DrawCursor())
+diff --git a/src/UIPlatform/Render/Shaders/NifMaterial.hlsl b/src/UIPlatform/Render/Shaders/NifMaterial.hlsl
+index 28e1103..65eae33 100644
+--- a/src/UIPlatform/Render/Shaders/NifMaterial.hlsl
++++ b/src/UIPlatform/Render/Shaders/NifMaterial.hlsl
+@@ -8,6 +8,18 @@
+ #define MATERIAL_FACEGEN 0x80u
+ #define MATERIAL_FACEGEN_RGB_TINT 0x100u
+ #define MATERIAL_TEXTURE_ALPHA 0x200u
++#define MATERIAL_VERTEX_COLORS 0x400u
++#define MATERIAL_VERTEX_ALPHA 0x800u
++#define MATERIAL_GLOW_MAP 0x1000u
++#define MATERIAL_OWN_EMIT 0x2000u
++#define MATERIAL_ENVIRONMENT_MASK_MAP 0x4000u
++#define MATERIAL_EFFECT_SHADER 0x8000u
++#define MATERIAL_EFFECT_LIGHTING 0x10000u
++#define MATERIAL_GRAYSCALE_COLOR 0x20000u
++#define MATERIAL_GRAYSCALE_ALPHA 0x40000u
++#define MATERIAL_FALLOFF 0x80000u
++#define MATERIAL_ADDITIVE_BLEND 0x100000u
++#define MATERIAL_ENVMAP_LIGHT_FADE 0x200000u
+ 
+ cbuffer SceneConstants : register(b0)
+ {
+@@ -27,6 +39,12 @@ cbuffer MaterialConstants : register(b1)
+     // x: opacity, y: specular strength, z: environment scale, w: alpha threshold
+     float4 gMaterialParams;
+     float4 gTintColor;
++    // rgb: emissive color, w: emissive / effect scale multiplier
++    float4 gEmissiveColorScale;
++    // x: startAngle, y: stopAngle, z: startOpacity, w: stopOpacity
++    float4 gFalloffParams;
++    // xy: UV scale, zw: UV offset (inclui animacao de shader em tempo real)
++    float4 gUvTransform;
+     uint gMaterialFlags;
+     float3 gMaterialPadding;
+ };
+@@ -38,6 +56,7 @@ TextureCube<float4> gEnvironmentTexture : register(t3);
+ Texture2D<float4> gEnvironmentMaskTexture : register(t4);
+ Texture2D<float4> gFaceTintTexture : register(t5);
+ Texture2D<float4> gFaceDetailTexture : register(t6);
++Texture2D<float4> gGlowTexture : register(t7);
+ SamplerState gWrapSampler : register(s0);
+ SamplerState gClampSampler : register(s1);
+ 
+@@ -47,6 +66,7 @@ struct VSInput
+     float3 normal : NORMAL;
+     float4 tangent : TANGENT;
+     float2 textureCoordinate : TEXCOORD0;
++    float4 color : COLOR0;
+ };
+ 
+ struct VSOutput
+@@ -56,6 +76,7 @@ struct VSOutput
+     float3 normal : TEXCOORD1;
+     float4 tangent : TEXCOORD2;
+     float2 textureCoordinate : TEXCOORD3;
++    float4 color : COLOR0;
+ };
+ 
+ VSOutput VSMain(VSInput input)
+@@ -66,6 +87,7 @@ VSOutput VSMain(VSInput input)
+     output.normal = input.normal;
+     output.tangent = input.tangent;
+     output.textureCoordinate = input.textureCoordinate;
++    output.color = input.color;
+     return output;
+ }
+ 
+@@ -83,6 +105,26 @@ float3 LinearToSrgb(float3 linearColor)
+     return lerp(upper, lower, step(linearColor, 0.0031308f));
+ }
+ 
++float3 SrgbToLinear(float3 srgbColor)
++{
++    const float3 clamped = max(srgbColor, 0.0f);
++    const float3 lower = clamped / 12.92f;
++    const float3 upper = pow((clamped + 0.055f) / 1.055f, 2.4f);
++    return lerp(upper, lower, step(clamped, 0.04045f));
++}
++
++// Aetherius: usa Reinhard em baixas luminancias para nao esmagar metais escuros
++// (Adaga de Ferro, Elmo Daedrico) e madeira escura no toe do ACES, transicionando
++// suavemente para ToneMapACES em meios-tons e realces.
++float3 EncodeLinearDisplay(float3 linearColor)
++{
++    const float3 exposed = max(linearColor, 0.0f) * gPostProcessParams.x;
++    const float3 aces = ToneMapACES(exposed);
++    const float3 reinhard = exposed / (1.0f + exposed);
++    const float3 mapped = lerp(reinhard, aces, saturate(exposed * 2.5f));
++    return LinearToSrgb(mapped);
++}
++
+ float3 ApplyFaceGenOverlay(float3 diffuseColor, float3 tintColor, float3 detailColor)
+ {
+     const float3 diffuseSquared = diffuseColor * diffuseColor;
+@@ -90,10 +132,91 @@ float3 ApplyFaceGenOverlay(float3 diffuseColor, float3 tintColor, float3 detailC
+             2.0f * tintColor * diffuseSquared) * detailColor;
+ }
+ 
+-float4 PSMain(VSOutput input) : SV_Target
++float4 PSMain(VSOutput input, bool isFrontFace : SV_IsFrontFace) : SV_Target
+ {
+-    const float4 albedo = gDiffuseTexture.Sample(gWrapSampler, input.textureCoordinate);
+-    const float4 normalSample = gNormalTexture.Sample(gWrapSampler, input.textureCoordinate);
++    const float2 uv = input.textureCoordinate * gUvTransform.xy + gUvTransform.zw;
++    const float4 albedo = gDiffuseTexture.Sample(gWrapSampler, uv);
++    const float3 viewDirection = normalize(gCameraPosition.xyz - input.worldPosition);
++
++    // BSEffectShaderProperty path (asas translucidas, halos, chamas, espirais de brilho).
++    if ((gMaterialFlags & MATERIAL_EFFECT_SHADER) != 0u)
++    {
++        const float3 vertexColor =
++            (gMaterialFlags & MATERIAL_VERTEX_COLORS) != 0u ? SrgbToLinear(input.color.rgb) : 1.0f;
++        const float vertexAlpha =
++            (gMaterialFlags & MATERIAL_VERTEX_ALPHA) != 0u ? input.color.a : 1.0f;
++        const float3 baseColor = gTintColor.rgb * vertexColor;
++
++        float3 effectColor = albedo.rgb * baseColor;
++        float effectAlpha = albedo.a * gMaterialParams.x * vertexAlpha;
++
++        if ((gMaterialFlags & MATERIAL_GLOW_MAP) != 0u)
++        {
++            if ((gMaterialFlags & MATERIAL_GRAYSCALE_COLOR) != 0u)
++            {
++                const float paletteU = saturate(albedo.r);
++                const float3 paletteRgb = gGlowTexture.Sample(gClampSampler, float2(paletteU, 0.5f)).rgb;
++                effectColor = paletteRgb * baseColor;
++            }
++            if ((gMaterialFlags & MATERIAL_GRAYSCALE_ALPHA) != 0u)
++            {
++                const float paletteU = saturate(albedo.a);
++                const float paletteAlpha = gGlowTexture.Sample(gClampSampler, float2(paletteU, 0.5f)).a;
++                effectAlpha = paletteAlpha * gMaterialParams.x * vertexAlpha;
++            }
++        }
++
++        if ((gMaterialFlags & MATERIAL_FALLOFF) != 0u)
++        {
++            float3 effectNormal = normalize(input.normal);
++            if (!isFrontFace)
++            {
++                effectNormal = -effectNormal;
++            }
++            const float ndotv = abs(dot(effectNormal, viewDirection));
++            const float denom = gFalloffParams.x - gFalloffParams.y;
++            const float t = abs(denom) > 1.0e-4f ? saturate((ndotv - gFalloffParams.y) / denom) : 1.0f;
++            effectAlpha *= saturate(lerp(gFalloffParams.w, gFalloffParams.z, t));
++        }
++
++        if ((gMaterialFlags & MATERIAL_ALPHA_TEST) != 0u && effectAlpha < gMaterialParams.w)
++        {
++            discard;
++        }
++
++        float3 litEffect = effectColor * max(gEmissiveColorScale.w, 0.0f);
++        if ((gMaterialFlags & MATERIAL_EFFECT_LIGHTING) != 0u)
++        {
++            float3 effectNormal = normalize(input.normal);
++            if (!isFrontFace)
++            {
++                effectNormal = -effectNormal;
++            }
++            const float hemi = saturate(effectNormal.z * 0.5f + 0.5f);
++            float3 effLight = lerp(gAmbientBottom.rgb, gAmbientTop.rgb, hemi);
++            [unroll]
++            for (int lightIndex = 0; lightIndex < 3; ++lightIndex)
++            {
++                const float3 lightDirection = normalize(gLightDirection[lightIndex].xyz);
++                effLight += gLightColor[lightIndex].rgb * saturate(dot(effectNormal, lightDirection));
++            }
++            litEffect *= effLight;
++        }
++
++        const float3 displayColor = EncodeLinearDisplay(litEffect);
++        const float clampedAlpha = saturate(effectAlpha);
++        if ((gMaterialFlags & MATERIAL_ADDITIVE_BLEND) != 0u)
++        {
++            return float4(displayColor * clampedAlpha, 0.0f);
++        }
++        if ((gMaterialFlags & MATERIAL_PREMULTIPLIED_ALPHA) != 0u)
++        {
++            return float4(displayColor * clampedAlpha, clampedAlpha);
++        }
++        return float4(displayColor, 1.0f);
++    }
++
++    const float4 normalSample = gNormalTexture.Sample(gWrapSampler, uv);
+ 
+     float3 normal = normalize(input.normal);
+     if ((gMaterialFlags & MATERIAL_NORMAL_MAP) != 0u)
+@@ -109,15 +232,18 @@ float4 PSMain(VSOutput input) : SV_Target
+     {
+         normal = normalize(normalSample.xyz * 2.0f - 1.0f);
+     }
++    if (!isFrontFace)
++    {
++        normal = -normal;
++    }
+ 
+-    const float3 viewDirection = normalize(gCameraPosition.xyz - input.worldPosition);
+     const float hemisphereAmount = saturate(normal.z * 0.5f + 0.5f);
+     float3 lighting = lerp(gAmbientBottom.rgb, gAmbientTop.rgb, hemisphereAmount);
+     float3 specular = 0.0f;
+     float specularMask = normalSample.a;
+     if ((gMaterialFlags & MATERIAL_SPECULAR_MAP) != 0u)
+     {
+-        specularMask = gSpecularTexture.Sample(gWrapSampler, input.textureCoordinate).r;
++        specularMask = gSpecularTexture.Sample(gWrapSampler, uv).r;
+     }
+ 
+     [unroll]
+@@ -134,7 +260,7 @@ float4 PSMain(VSOutput input) : SV_Target
+                                         gSpecularColorPower.w);
+             specular += gLightColor[lightIndex].rgb *
+                         gSpecularColorPower.rgb *
+-                        highlight * specularMask * gMaterialParams.y;
++                        highlight * specularMask * gMaterialParams.y * 0.85f;
+         }
+     }
+ 
+@@ -142,16 +268,26 @@ float4 PSMain(VSOutput input) : SV_Target
+     if ((gMaterialFlags & MATERIAL_ENVIRONMENT_MAP) != 0u)
+     {
+         const float3 reflection = reflect(-viewDirection, normal);
+-        const float environmentMask =
+-            gEnvironmentMaskTexture.Sample(gWrapSampler, input.textureCoordinate).r;
++        // No Skyrim, quando nao ha mascara _m.dds explicita, o canal alpha do normal map
++        // controla a intensidade do reflexo do cubemap.
++        const float environmentMask = (gMaterialFlags & MATERIAL_ENVIRONMENT_MASK_MAP) != 0u
++            ? gEnvironmentMaskTexture.Sample(gWrapSampler, uv).r
++            : normalSample.a;
++        // Piso minimo de 0.45 garante que metais escuros e vidro mantenham reflexo nitido
++        // mesmo em areas fora da luz direta.
++        const float envLightFade = (gMaterialFlags & MATERIAL_ENVMAP_LIGHT_FADE) != 0u
++            ? lerp(0.45f, 1.0f, saturate(dot(lighting, float3(0.3333f, 0.3333f, 0.3333f))))
++            : 1.0f;
+         environment = gEnvironmentTexture.Sample(gClampSampler, reflection).rgb *
+-                      gSpecularColorPower.rgb * environmentMask * gMaterialParams.z;
++                      gSpecularColorPower.rgb * environmentMask * gMaterialParams.z *
++                      envLightFade * 0.80f;
+     }
+ 
+     // An opaque Skyrim material may use diffuse alpha as data, not coverage.
+     // Only an explicit alpha property permits it to cut/blend the silhouette.
+     const float coverage = (gMaterialFlags & MATERIAL_TEXTURE_ALPHA) != 0u ? albedo.a : 1.0f;
+-    const float alpha = coverage * gMaterialParams.x;
++    const float vertexAlpha = (gMaterialFlags & MATERIAL_VERTEX_ALPHA) != 0u ? input.color.a : 1.0f;
++    const float alpha = saturate(coverage * gMaterialParams.x * vertexAlpha);
+     if ((gMaterialFlags & MATERIAL_ALPHA_TEST) != 0u && alpha < gMaterialParams.w)
+     {
+         discard;
+@@ -160,10 +296,9 @@ float4 PSMain(VSOutput input) : SV_Target
+     float3 diffuseColor = albedo.rgb * gTintColor.rgb;
+     if ((gMaterialFlags & MATERIAL_FACEGEN) != 0u)
+     {
+-        const float3 tintColor = gFaceTintTexture.Sample(
+-            gWrapSampler, input.textureCoordinate).rgb;
++        const float3 tintColor = gFaceTintTexture.Sample(gWrapSampler, uv).rgb;
+         const float3 detailColor =
+-            (gFaceDetailTexture.Sample(gWrapSampler, input.textureCoordinate).rgb +
++            (gFaceDetailTexture.Sample(gWrapSampler, uv).rgb +
+              (1.0f / 255.0f)) * (255.0f / 64.0f);
+         diffuseColor = ApplyFaceGenOverlay(albedo.rgb, tintColor, detailColor);
+     }
+@@ -172,15 +307,44 @@ float4 PSMain(VSOutput input) : SV_Target
+         const float3 detailColor = float3(1.01172f, 0.996094f, 1.01172f);
+         diffuseColor = ApplyFaceGenOverlay(albedo.rgb, gTintColor.rgb, detailColor);
+     }
++    else if ((gMaterialFlags & MATERIAL_VERTEX_COLORS) != 0u)
++    {
++        diffuseColor *= SrgbToLinear(input.color.rgb);
++    }
++
++    float3 emissive = 0.0f;
++    if ((gMaterialFlags & MATERIAL_GLOW_MAP) != 0u)
++    {
++        const float3 glowSample = gGlowTexture.Sample(gWrapSampler, uv).rgb;
++        emissive = glowSample * gEmissiveColorScale.rgb * gEmissiveColorScale.w;
++    }
++    else if ((gMaterialFlags & MATERIAL_OWN_EMIT) != 0u)
++    {
++        emissive = diffuseColor * gEmissiveColorScale.rgb * gEmissiveColorScale.w;
++    }
+ 
+-    float3 color = diffuseColor * lighting + specular + environment;
+-    color = LinearToSrgb(ToneMapACES(max(color, 0.0f) * gPostProcessParams.x));
++    if ((gMaterialFlags & MATERIAL_ADDITIVE_BLEND) != 0u)
++    {
++        const float3 addColor = EncodeLinearDisplay(diffuseColor * lighting + specular + environment + emissive);
++        return float4(addColor * alpha, 0.0f);
++    }
+     if ((gMaterialFlags & MATERIAL_PREMULTIPLIED_ALPHA) != 0u)
+     {
+-        color *= alpha;
++        // Em vidro e superficies translucidas: o Fresnel preserva o centro limpo para o
++        // conteudo interno e destaca as bordas vitreas, enquanto o brilho especular estreito
++        // reflete nitidamente sobre a superficie sem transformar o frasco em branco leitoso.
++        const float ndotv = abs(dot(normal, viewDirection));
++        const float fresnel = lerp(0.45f, 1.0f, pow(saturate(1.0f - ndotv), 2.0f));
++        const float3 bodyColor = EncodeLinearDisplay(diffuseColor * lighting + environment * fresnel + emissive);
++        const float3 specDisplay = EncodeLinearDisplay(specular);
++        const float specLum = max(specDisplay.r, max(specDisplay.g, specDisplay.b));
++        const float3 premultColor = saturate(bodyColor * alpha + specDisplay * (0.45f + 0.55f * alpha));
++        const float outAlpha = saturate(alpha + specLum * 0.35f);
++        return float4(premultColor, outAlpha);
+     }
++    const float3 litColor = diffuseColor * lighting + specular + environment + emissive;
++    const float3 color = EncodeLinearDisplay(litColor);
+     // Alpha-tested survivors are opaque. The compositor consumes a
+     // premultiplied render target, including genuinely translucent draws.
+-    const float outputAlpha = (gMaterialFlags & MATERIAL_PREMULTIPLIED_ALPHA) != 0u ? alpha : 1.0f;
+-    return float4(color, outputAlpha);
++    return float4(color, 1.0f);
+ }
+diff --git a/src/UIPlatform/Render/SkyrimNifExtractor.cpp b/src/UIPlatform/Render/SkyrimNifExtractor.cpp
+index f679bd6..fefa0b7 100644
+--- a/src/UIPlatform/Render/SkyrimNifExtractor.cpp
++++ b/src/UIPlatform/Render/SkyrimNifExtractor.cpp
+@@ -6,6 +6,7 @@
+ #include "Render/PackedGeometryDecoder.h"
+ 
+ #include <algorithm>
++#include <cctype>
+ #include <cmath>
+ #include <cstring>
+ #include <limits>
+@@ -178,52 +179,440 @@ namespace Meridian::Render::NifPreview
+             ReadbackFailed,
+         };
+ 
+-        PreviewMaterial ExtractMaterial(RE::BSTriShape* a_shape,
+-                                        bool a_preferRuntimeTextures)
++        bool ContainsInsensitive(std::string_view a_haystack, std::string_view a_needle)
+         {
+-            PreviewMaterial material{};
++            if (a_needle.empty() || a_haystack.size() < a_needle.size())
++            {
++                return false;
++            }
++            const auto it = std::search(
++                a_haystack.begin(),
++                a_haystack.end(),
++                a_needle.begin(),
++                a_needle.end(),
++                [](char a_left, char a_right) {
++                    return std::tolower(static_cast<unsigned char>(a_left)) ==
++                           std::tolower(static_cast<unsigned char>(a_right));
++                });
++            return it != a_haystack.end();
++        }
++
++        bool IsWorldHelperNodeName(std::string_view a_name)
++        {
++            if (a_name.empty())
++            {
++                return false;
++            }
++            return ContainsInsensitive(a_name, "editormarker") ||
++                   ContainsInsensitive(a_name, "pplight") ||
++                   ContainsInsensitive(a_name, "heatrefraction");
++        }
++
++        bool IsEnbLightDummyTexture(std::string_view a_path)
++        {
++            if (a_path.empty())
++            {
++                return false;
++            }
++            return ContainsInsensitive(a_path, "pp_black.dds") ||
++                   ContainsInsensitive(a_path, "enblight") ||
++                   ContainsInsensitive(a_path, "enblightglow");
++        }
++
++        RE::BSEffectShaderProperty* CastEffectShaderProperty(RE::NiProperty* a_property)
++        {
++            if (a_property == nullptr)
++            {
++                return nullptr;
++            }
++            const auto* rtti = a_property->GetRTTI();
++            if (rtti == nullptr || rtti->GetName() == nullptr)
++            {
++                return nullptr;
++            }
++            if (std::string_view(rtti->GetName()) == "BSEffectShaderProperty")
++            {
++                return static_cast<RE::BSEffectShaderProperty*>(a_property);
++            }
++            return nullptr;
++        }
++
++        void ReadAlphaProperty(RE::NiAlphaProperty* a_alpha, PreviewMaterial& a_material)
++        {
++            if (a_alpha == nullptr)
++            {
++                return;
++            }
++            a_material.alphaBlend = a_alpha->GetAlphaBlending();
++            a_material.alphaTest = a_alpha->GetAlphaTesting();
++            a_material.alphaThreshold = static_cast<float>(a_alpha->alphaThreshold) / 255.0f;
++            a_material.additiveBlend =
++                a_material.alphaBlend &&
++                a_alpha->GetDestBlendMode() == RE::NiAlphaProperty::AlphaFunction::kOne;
++        }
++
++        bool MapLightingControlledVariable(std::uint32_t a_varId, PreviewAnimationTarget& a_target)
++        {
++            switch (a_varId)
++            {
++            case 8:  a_target = PreviewAnimationTarget::EnvironmentScale; return true;
++            case 9:  a_target = PreviewAnimationTarget::Glossiness; return true;
++            case 10: a_target = PreviewAnimationTarget::SpecularStrength; return true;
++            case 11: a_target = PreviewAnimationTarget::EmissiveMultiple; return true;
++            case 12: a_target = PreviewAnimationTarget::Alpha; return true;
++            case 20: a_target = PreviewAnimationTarget::UOffset; return true;
++            case 21: a_target = PreviewAnimationTarget::UScale; return true;
++            case 22: a_target = PreviewAnimationTarget::VOffset; return true;
++            case 23: a_target = PreviewAnimationTarget::VScale; return true;
++            default: return false;
++            }
++        }
++
++        bool MapEffectControlledVariable(std::uint32_t a_varId, PreviewAnimationTarget& a_target)
++        {
++            switch (a_varId)
++            {
++            case 0: a_target = PreviewAnimationTarget::EmissiveMultiple; return true;
++            case 1: a_target = PreviewAnimationTarget::FalloffStartAngle; return true;
++            case 2: a_target = PreviewAnimationTarget::FalloffStopAngle; return true;
++            case 3: a_target = PreviewAnimationTarget::FalloffStartOpacity; return true;
++            case 4: a_target = PreviewAnimationTarget::FalloffStopOpacity; return true;
++            case 5: a_target = PreviewAnimationTarget::Alpha; return true;
++            case 6: a_target = PreviewAnimationTarget::UOffset; return true;
++            case 7: a_target = PreviewAnimationTarget::UScale; return true;
++            case 8: a_target = PreviewAnimationTarget::VOffset; return true;
++            case 9: a_target = PreviewAnimationTarget::VScale; return true;
++            default: return false;
++            }
++        }
++
++        void ExtractShaderFloatControllers(RE::NiObjectNET* a_owner,
++                                           bool a_isEffectShader,
++                                           PreviewMaterial& a_material)
++        {
++            if (a_owner == nullptr)
++            {
++                return;
++            }
++            constexpr std::size_t kMaxControllersPerShader = 16;
++            constexpr std::uint32_t kMaxKeysPerTrack = 512;
++            std::size_t visited = 0;
++
++            for (auto* ctrl = a_owner->GetControllers();
++                 ctrl != nullptr && visited < kMaxControllersPerShader;
++                 ctrl = ctrl->GetNext(), ++visited)
++            {
++                const auto* rtti = ctrl->GetRTTI();
++                if (rtti == nullptr || rtti->GetName() == nullptr)
++                {
++                    continue;
++                }
++                const std::string_view typeName(rtti->GetName());
++                const bool isLightingFloat = typeName == "BSLightingShaderPropertyFloatController";
++                const bool isEffectFloat = typeName == "BSEffectShaderPropertyFloatController";
++                const bool isAlphaCtrl = typeName == "NiAlphaController";
++                if (!isLightingFloat && !isEffectFloat && !isAlphaCtrl)
++                {
++                    continue;
++                }
++
++                auto* interpCtrl = static_cast<RE::NiInterpController*>(ctrl);
++                auto* rawInterp = interpCtrl->GetInterpolator(0);
++                if (rawInterp == nullptr)
++                {
++                    continue;
++                }
++                const auto* interpRtti = rawInterp->GetRTTI();
++                if (interpRtti == nullptr || interpRtti->GetName() == nullptr ||
++                    std::string_view(interpRtti->GetName()) != "NiFloatInterpolator")
++                {
++                    continue;
++                }
++
++                auto* floatInterp = static_cast<RE::NiFloatInterpolator*>(rawInterp);
++                const auto* floatData = floatInterp->floatData.get();
++                if (floatData == nullptr || floatData->numKeys < 2 ||
++                    floatData->numKeys > kMaxKeysPerTrack || floatData->keys == nullptr ||
++                    floatData->keySize < sizeof(RE::NiFloatKey))
++                {
++                    continue;
++                }
++
++                PreviewAnimationTarget target = PreviewAnimationTarget::Alpha;
++                if (!isAlphaCtrl)
++                {
++                    // Validacao de layout em tempo de execucao: em NiSingleInterpController,
++                    // o campo interpolator (NiPointer<NiInterpolator>) fica logo apos
++                    // NiInterpController (0x48), e controlledVariable (uint32) logo apos (0x50).
++                    const auto* rawBytes = reinterpret_cast<const std::uint8_t*>(ctrl);
++                    const auto* storedInterp = *reinterpret_cast<const RE::NiInterpolator* const*>(
++                        rawBytes + sizeof(RE::NiInterpController));
++                    if (storedInterp != rawInterp)
++                    {
++                        continue;
++                    }
++                    std::uint32_t varId = 0;
++                    std::memcpy(
++                        &varId,
++                        rawBytes + sizeof(RE::NiInterpController) + sizeof(void*),
++                        sizeof(varId));
++                    const bool mapped = (isEffectFloat || a_isEffectShader)
++                        ? MapEffectControlledVariable(varId, target)
++                        : MapLightingControlledVariable(varId, target);
++                    if (!mapped)
++                    {
++                        continue;
++                    }
++                }
++
++                PreviewFloatTrack track{};
++                track.target = target;
++                const auto rawCycle =
++                    (static_cast<std::uint16_t>(ctrl->flags.underlying()) &
++                     static_cast<std::uint16_t>(RE::NiTimeController::Flag::kCycleType_Mask)) >>
++                    1;
++                if (rawCycle == 1)
++                {
++                    track.cycle = PreviewAnimationCycle::Reverse;
++                }
++                else if (rawCycle == 2)
++                {
++                    track.cycle = PreviewAnimationCycle::Clamp;
++                }
++                else
++                {
++                    track.cycle = PreviewAnimationCycle::Loop;
++                }
++                track.frequency = std::isfinite(ctrl->frequency) && ctrl->frequency > 0.0f
++                    ? ctrl->frequency : 1.0f;
++                track.phase = std::isfinite(ctrl->phase) ? ctrl->phase : 0.0f;
++                track.startTime = std::isfinite(ctrl->loKeyTime) ? ctrl->loKeyTime : 0.0f;
++                track.stopTime = std::isfinite(ctrl->hiKeyTime) ? ctrl->hiKeyTime : 0.0f;
++
++                track.keys.reserve(floatData->numKeys);
++                const auto* keyBytes = reinterpret_cast<const std::uint8_t*>(floatData->keys);
++                const std::size_t stride = floatData->keySize;
++                for (std::uint32_t k = 0; k < floatData->numKeys; ++k)
++                {
++                    float keyTime = 0.0f;
++                    float keyVal = 0.0f;
++                    std::memcpy(&keyTime, keyBytes + k * stride, sizeof(float));
++                    std::memcpy(&keyVal, keyBytes + k * stride + sizeof(float), sizeof(float));
++                    if (std::isfinite(keyTime) && std::isfinite(keyVal))
++                    {
++                        track.keys.push_back({keyTime, keyVal});
++                    }
++                }
++                if (track.keys.size() >= 2)
++                {
++                    a_material.floatTracks.push_back(std::move(track));
++                }
++            }
++        }
++
++        bool TryExtractMaterial(RE::BSTriShape* a_shape,
++                                bool a_preferRuntimeTextures,
++                                PreviewMaterial& a_material)
++        {
++            a_material = PreviewMaterial{};
+             if (a_shape == nullptr)
+             {
+-                return material;
++                return false;
++            }
++
++            const auto* rawShapeName = a_shape->name.c_str();
++            const std::string_view shapeName =
++                rawShapeName != nullptr ? std::string_view(rawShapeName) : std::string_view{};
++            if (IsWorldHelperNodeName(shapeName))
++            {
++                return false;
+             }
+ 
+             const auto& geometryData = a_shape->GetGeometryRuntimeData();
++            auto* rawShader = geometryData.shaderProperty.get();
++            if (rawShader == nullptr)
++            {
++                // O motor do Skyrim nao renderiza geometria sem shader (ex.: SalmonRoe01:10).
++                return false;
++            }
++
++            if (auto* effectShader = CastEffectShaderProperty(rawShader); effectShader != nullptr)
++            {
++                if (effectShader->flags.any(
++                        RE::BSShaderProperty::EShaderPropertyFlag::kRefraction,
++                        RE::BSShaderProperty::EShaderPropertyFlag::kTempRefraction))
++                {
++                    return false;
++                }
++                auto* baseMaterial = effectShader->GetBaseMaterial();
++                if (baseMaterial == nullptr ||
++                    baseMaterial->GetType() != RE::BSShaderMaterial::Type::kEffect)
++                {
++                    return false;
++                }
++                auto* effectMaterial = static_cast<RE::BSEffectShaderMaterial*>(baseMaterial);
++
++                if (const auto* src = effectMaterial->sourceTexturePath.c_str();
++                    src != nullptr && src[0] != '\0')
++                {
++                    a_material.diffuseTexturePath = src;
++                }
++                if (effectMaterial->sourceTexture != nullptr)
++                {
++                    RecoverRuntimeTexturePath(
++                        a_material.diffuseTexturePath,
++                        effectMaterial->sourceTexture->name.c_str(),
++                        a_preferRuntimeTextures);
++                }
++                if (const auto* grey = effectMaterial->greyscaleTexturePath.c_str();
++                    grey != nullptr && grey[0] != '\0')
++                {
++                    a_material.glowTexturePath = grey;
++                }
++                if (effectMaterial->greyscaleTexture != nullptr)
++                {
++                    RecoverRuntimeTexturePath(
++                        a_material.glowTexturePath,
++                        effectMaterial->greyscaleTexture->name.c_str(),
++                        a_preferRuntimeTextures);
++                }
++
++                // Dummies de luz ENB / Particle Patch (ex.: ppLight com pp_black.dds)
++                // sao invisiveis no jogo e nao devem distorcer o enquadramento nem virar malha branca.
++                if (IsEnbLightDummyTexture(a_material.diffuseTexturePath))
++                {
++                    return false;
++                }
++
++                a_material.feature = PreviewMaterialFeature::Effect;
++                a_material.effectShader = true;
++                a_material.twoSided = effectShader->flags.all(
++                    RE::BSShaderProperty::EShaderPropertyFlag::kTwoSided);
++                a_material.premultipliedAlpha = effectShader->flags.all(
++                    RE::BSShaderProperty::EShaderPropertyFlag::kPremultAlpha);
++                a_material.vertexColors = effectShader->flags.all(
++                    RE::BSShaderProperty::EShaderPropertyFlag::kVertexColors);
++                a_material.vertexAlpha = effectShader->flags.all(
++                    RE::BSShaderProperty::EShaderPropertyFlag::kVertexAlpha);
++                a_material.effectLighting = effectShader->flags.all(
++                    RE::BSShaderProperty::EShaderPropertyFlag::kEffectLighting);
++                a_material.grayscaleToPaletteColor = effectShader->flags.all(
++                    RE::BSShaderProperty::EShaderPropertyFlag::kGrayscaleToPaletteColor);
++                a_material.grayscaleToPaletteAlpha = effectShader->flags.all(
++                    RE::BSShaderProperty::EShaderPropertyFlag::kGrayscaleToPaletteAlpha);
++                a_material.falloffEnabled = effectShader->flags.all(
++                    RE::BSShaderProperty::EShaderPropertyFlag::kFalloff);
++                a_material.glowMapEnabled = !a_material.glowTexturePath.empty();
++
++                const auto& bc = effectMaterial->baseColor;
++                a_material.tintColor = {
++                    std::isfinite(bc.red) ? std::clamp(bc.red, 0.0f, 16.0f) : 1.0f,
++                    std::isfinite(bc.green) ? std::clamp(bc.green, 0.0f, 16.0f) : 1.0f,
++                    std::isfinite(bc.blue) ? std::clamp(bc.blue, 0.0f, 16.0f) : 1.0f,
++                };
++                a_material.opacity = std::isfinite(bc.alpha) ? std::clamp(bc.alpha, 0.0f, 1.0f) : 1.0f;
++                const float scale = effectMaterial->baseColorScale;
++                a_material.emissiveMultiple =
++                    std::isfinite(scale) ? std::clamp(scale, 0.0f, 16.0f) : 1.0f;
++                a_material.falloffStartAngle = std::isfinite(effectMaterial->falloffStartAngle)
++                    ? effectMaterial->falloffStartAngle : 1.0f;
++                a_material.falloffStopAngle = std::isfinite(effectMaterial->falloffStopAngle)
++                    ? effectMaterial->falloffStopAngle : 0.0f;
++                a_material.falloffStartOpacity = std::isfinite(effectMaterial->falloffStartOpacity)
++                    ? std::clamp(effectMaterial->falloffStartOpacity, 0.0f, 1.0f) : 1.0f;
++                a_material.falloffStopOpacity = std::isfinite(effectMaterial->falloffStopOpacity)
++                    ? std::clamp(effectMaterial->falloffStopOpacity, 0.0f, 1.0f) : 1.0f;
++                a_material.textureOffset = {
++                    effectMaterial->texCoordOffset[0].x,
++                    effectMaterial->texCoordOffset[0].y,
++                };
++                a_material.textureScale = {
++                    effectMaterial->texCoordScale[0].x,
++                    effectMaterial->texCoordScale[0].y,
++                };
++
++                ReadAlphaProperty(geometryData.alphaProperty.get(), a_material);
++                if (geometryData.alphaProperty == nullptr && a_material.opacity < 0.999f)
++                {
++                    a_material.alphaBlend = true;
++                }
++                ExtractShaderFloatControllers(effectShader, true, a_material);
++                return true;
++            }
++
+             auto* shader = a_shape->lightingShaderProp_cast();
+             if (shader == nullptr)
+             {
+-                return material;
++                return false;
++            }
++            if (shader->flags.any(
++                    RE::BSShaderProperty::EShaderPropertyFlag::kRefraction,
++                    RE::BSShaderProperty::EShaderPropertyFlag::kTempRefraction))
++            {
++                // Planos de distorcao de calor/refracao (ex.: HeatRefraction:0 na tocha)
++                // nao possuem framebuffer de refracao na previa e nao devem ser desenhados.
++                return false;
+             }
+ 
++            auto& material = a_material;
+             material.twoSided = shader->flags.all(
+                 RE::BSShaderProperty::EShaderPropertyFlag::kTwoSided);
+             material.premultipliedAlpha = shader->flags.all(
+                 RE::BSShaderProperty::EShaderPropertyFlag::kPremultAlpha);
+             material.specularEnabled = shader->flags.all(
+                 RE::BSShaderProperty::EShaderPropertyFlag::kSpecular);
++            material.envmapLightFade = shader->flags.all(
++                RE::BSShaderProperty::EShaderPropertyFlag::kEnvmapLightFade);
++            material.vertexColors = shader->flags.all(
++                RE::BSShaderProperty::EShaderPropertyFlag::kVertexColors);
++            material.vertexAlpha = shader->flags.all(
++                RE::BSShaderProperty::EShaderPropertyFlag::kVertexAlpha);
++            material.ownEmit = shader->flags.all(
++                RE::BSShaderProperty::EShaderPropertyFlag::kOwnEmit);
++            material.glowMapEnabled = shader->flags.all(
++                RE::BSShaderProperty::EShaderPropertyFlag::kGlowMap);
+             const auto usesModelSpaceNormals = shader->flags.all(
+                 RE::BSShaderProperty::EShaderPropertyFlag::kModelSpaceNormals);
+             material.opacity = std::clamp(shader->QMaterialAlpha(), 0.0f, 1.0f);
+ 
+-            if (auto* alpha = geometryData.alphaProperty.get(); alpha != nullptr)
++            if (shader->emissiveColor != nullptr)
+             {
+-                material.alphaBlend = alpha->GetAlphaBlending();
+-                material.alphaTest = alpha->GetAlphaTesting();
+-                material.alphaThreshold = static_cast<float>(alpha->alphaThreshold) / 255.0f;
++                const float er = shader->emissiveColor->red;
++                const float eg = shader->emissiveColor->green;
++                const float eb = shader->emissiveColor->blue;
++                if (std::isfinite(er) && std::isfinite(eg) && std::isfinite(eb))
++                {
++                    material.emissiveColor = {
++                        std::clamp(er, 0.0f, 16.0f),
++                        std::clamp(eg, 0.0f, 16.0f),
++                        std::clamp(eb, 0.0f, 16.0f),
++                    };
++                }
+             }
++            material.emissiveMultiple = std::isfinite(shader->emissiveMult)
++                ? std::clamp(shader->emissiveMult, 0.0f, 16.0f)
++                : 0.0f;
++
++            ReadAlphaProperty(geometryData.alphaProperty.get(), material);
++            ExtractShaderFloatControllers(shader, false, material);
+ 
+             auto* baseMaterial = shader->GetBaseMaterial();
+             if (baseMaterial == nullptr ||
+                 baseMaterial->GetType() != RE::BSShaderMaterial::Type::kLighting)
+             {
+-                return material;
++                return true;
+             }
+             auto* lightingMaterial = static_cast<RE::BSLightingShaderMaterialBase*>(baseMaterial);
++            if (baseMaterial->GetFeature() == RE::BSShaderMaterial::Feature::kGlowMap)
++            {
++                material.glowMapEnabled = true;
++            }
+             material.specularColor = {
+                 lightingMaterial->specularColor.red,
+                 lightingMaterial->specularColor.green,
+                 lightingMaterial->specularColor.blue,
+             };
+-            material.specularPower = std::clamp(lightingMaterial->specularPower, 1.0f, 256.0f);
++            material.specularPower = std::clamp(lightingMaterial->specularPower, 1.0f, 512.0f);
+             material.specularStrength = std::clamp(
+                 lightingMaterial->specularColorScale, 0.0f, 16.0f);
+             material.textureOffset = {
+@@ -301,6 +690,12 @@ namespace Meridian::Render::NifPreview
+                                 material.diffuseTexturePath);
+                 readTexturePath(RE::BSTextureSet::Textures::kNormal,
+                                 material.normalTexturePath);
++                // Slot 2 = glow map (_g.dds) no BSShaderTextureSet do Skyrim.
++                constexpr std::uint32_t kGlowMapSlot = 2;
++                if (material.glowMapEnabled)
++                {
++                    readTexturePath(kGlowMapSlot, material.glowTexturePath);
++                }
+                 // Aetherius: slots reais do BSShaderTextureSet (4 = cubemap, 5 = máscara
+                 // de reflexo). O enum do CommonLib diz kEnvironment = 5 e kEnvironmentMask = 2,
+                 // o que carregava o _m.dds como cubemap e deixava o metal sem reflexo.
+@@ -341,7 +736,10 @@ namespace Meridian::Render::NifPreview
+                 }
+             }
+             if (a_preferRuntimeTextures || material.diffuseTexturePath.empty() ||
+-                material.normalTexturePath.empty())
++                material.normalTexturePath.empty() ||
++                (material.glowMapEnabled && material.glowTexturePath.empty()) ||
++                (baseMaterial->GetFeature() == RE::BSShaderMaterial::Feature::kEnvironmentMap &&
++                 material.environmentTexturePath.empty()))
+             {
+                 // Cached models can have live NiSourceTextures after their
+                 // texture set has been cleared. Retain valid record/override
+@@ -361,12 +759,34 @@ namespace Meridian::Render::NifPreview
+                                       material.normalTexturePath);
+                 copySourceTexturePath(lightingMaterial->specularBackLightingTexture.get(),
+                                       material.specularTexturePath);
++                if (baseMaterial->GetFeature() == RE::BSShaderMaterial::Feature::kGlowMap)
++                {
++                    auto* glowMaterial = static_cast<RE::BSLightingShaderMaterialGlowmap*>(
++                        lightingMaterial);
++                    copySourceTexturePath(glowMaterial->glowTexture.get(),
++                                          material.glowTexturePath);
++                }
++                if (baseMaterial->GetFeature() == RE::BSShaderMaterial::Feature::kEnvironmentMap)
++                {
++                    auto* envMaterial = static_cast<RE::BSLightingShaderMaterialEnvmap*>(
++                        lightingMaterial);
++                    copySourceTexturePath(envMaterial->envTexture.get(),
++                                          material.environmentTexturePath);
++                    copySourceTexturePath(envMaterial->envMaskTexture.get(),
++                                          material.environmentMaskTexturePath);
++                    const float rawScale = envMaterial->envMapScale;
++                    material.environmentScale =
++                        std::isfinite(rawScale) && rawScale >= 0.0f && rawScale <= 16.0f ? rawScale : 1.0f;
++                    material.environmentEnabled =
++                        !material.environmentTexturePath.empty() &&
++                        shader->flags.all(RE::BSShaderProperty::EShaderPropertyFlag::kEnvMap);
++                }
+                 material.tangentSpaceNormal =
+                     !usesModelSpaceNormals && !material.normalTexturePath.empty();
+                 material.modelSpaceNormal =
+                     usesModelSpaceNormals && !material.normalTexturePath.empty();
+             }
+-            return material;
++            return true;
+         }
+ 
+         ShapeResult DecodeRendererGeometry(RE::BSGraphics::TriShape* a_rendererData,
+@@ -461,6 +881,12 @@ namespace Meridian::Render::NifPreview
+                 layout.textureCoordinateOffset =
+                     vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_TEXCOORD0);
+             }
++            layout.hasVertexColor = vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_COLORS);
++            if (layout.hasVertexColor)
++            {
++                layout.colorOffset =
++                    vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_COLOR);
++            }
+             layout.hasSkinning = vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_SKINNED);
+             if (layout.hasSkinning)
+             {
+@@ -484,15 +910,8 @@ namespace Meridian::Render::NifPreview
+ 
+         void ApplyMaterial(PreviewMesh& a_mesh, const PreviewMaterial& a_material)
+         {
+-            for (auto& vertex : a_mesh.vertices)
+-            {
+-                vertex.textureCoordinate.x =
+-                    vertex.textureCoordinate.x * a_material.textureScale.x +
+-                    a_material.textureOffset.x;
+-                vertex.textureCoordinate.y =
+-                    vertex.textureCoordinate.y * a_material.textureScale.y +
+-                    a_material.textureOffset.y;
+-            }
++            // Aetherius: textureScale e textureOffset agora sao aplicados via gUvTransform no
++            // pixel shader para permitir animacoes de UV em tempo real (ex.: liquido de pocoes).
+             if (!a_mesh.draws.empty())
+             {
+                 a_mesh.draws.front().material = a_material;
+@@ -509,6 +928,11 @@ namespace Meridian::Render::NifPreview
+                                       std::size_t& a_matchedMaterialTintOverrides,
+                                       PreviewMesh& a_combined)
+         {
++            PreviewMaterial material{};
++            if (!TryExtractMaterial(a_shape, a_preferRuntimeTextures, material))
++            {
++                return ShapeResult::Unsupported;
++            }
+             const auto& geometryData = a_shape->GetGeometryRuntimeData();
+             const auto& shapeData = a_shape->GetTrishapeRuntimeData();
+             PreviewMesh decoded{};
+@@ -526,7 +950,6 @@ namespace Meridian::Render::NifPreview
+             }
+ 
+             decoded.bounds = {};
+-            auto material = ExtractMaterial(a_shape, a_preferRuntimeTextures);
+             if (a_textureOverride != nullptr)
+             {
+                 ApplyTextureOverride(material, *a_textureOverride);
+@@ -683,7 +1106,11 @@ namespace Meridian::Render::NifPreview
+             }
+ 
+             PreviewMesh shapeMesh{};
+-            auto material = ExtractMaterial(a_shape, a_preferRuntimeTextures);
++            PreviewMaterial material{};
++            if (!TryExtractMaterial(a_shape, a_preferRuntimeTextures, material))
++            {
++                return ShapeResult::Unsupported;
++            }
+             if (a_textureOverride != nullptr)
+             {
+                 ApplyTextureOverride(material, *a_textureOverride);
+@@ -822,6 +1249,15 @@ namespace Meridian::Render::NifPreview
+                 }
+                 return;
+             }
++            if (const auto* rawObjectName = a_object->name.c_str();
++                rawObjectName != nullptr && IsWorldHelperNodeName(rawObjectName))
++            {
++                if (a_object->AsTriShape() != nullptr)
++                {
++                    ++a_result.skippedShapes;
++                }
++                return;
++            }
+ 
+             const auto transform = a_transforms.find(a_object);
+             if (transform == a_transforms.end())
+diff --git a/tests/UIPlatform/NifPreviewGpuTests.cpp b/tests/UIPlatform/NifPreviewGpuTests.cpp
+index a569fcf..4056fab 100644
+--- a/tests/UIPlatform/NifPreviewGpuTests.cpp
++++ b/tests/UIPlatform/NifPreviewGpuTests.cpp
+@@ -288,6 +288,75 @@ int main(int argc, char** argv)
+         const auto centerPixel = overlapA[32 * 64 + 32];
+         Check(((centerPixel >> 8) & 255) > ((centerPixel >> 16) & 255), "front green surface occludes rear red surface");
+         occlusionA.BeginShutdown(); occlusionB.BeginShutdown();
++
++        // Aetherius: regressao para efeito aditivo (BSEffectShaderProperty), vertex colors e
++        // ordenacao opaco -> transparente.
++        {
++            NifPreviewRenderer additivePreview;
++            auto additiveMesh = Triangle();
++            auto& mat = additiveMesh.draws.front().material;
++            mat.feature = PreviewMaterialFeature::Effect;
++            mat.effectShader = true;
++            mat.alphaBlend = true;
++            mat.additiveBlend = true;
++            mat.tintColor = {1.0f, 0.5f, 0.05f};
++            mat.emissiveMultiple = 1.5f;
++            mat.opacity = 0.8f;
++            Check(NifPreviewRendererTestAccess::Load(additivePreview, data, std::move(additiveMesh)),
++                  "additive effect mesh uploaded");
++            additivePreview.Prepare(data, 64, 64);
++            const auto additivePixels = Readback(data, additivePreview.GetSurfaceView().Get(), 64, 64);
++            Check(std::any_of(additivePixels.begin(), additivePixels.end(), [](auto p) {
++                      return (p >> 24) == 0 && ((p >> 16) & 255) > 20;
++                  }),
++                  "additive effect outputs premultiplied glow with zero alpha");
++            additivePreview.BeginShutdown();
++        }
++        {
++            NifPreviewRenderer effectFallbackPreview;
++            auto mixed = OverlappingTriangles(false);
++            mixed.draws[0].material.feature = PreviewMaterialFeature::Effect;
++            mixed.draws[0].material.effectShader = true;
++            mixed.draws[0].material.diffuseTexturePath = "textures\\missing-inventory-diffuse.dds";
++            Check(NifPreviewRendererTestAccess::Load(effectFallbackPreview, data, std::move(mixed)),
++                  "missing effect texture skips effect shape without refusing main item");
++            effectFallbackPreview.Prepare(data, 64, 64);
++            Check(VisiblePixels(Readback(data, effectFallbackPreview.GetSurfaceView().Get(), 64, 64)) > 100,
++                  "main opaque shape still renders when auxiliary effect texture is missing");
++            effectFallbackPreview.BeginShutdown();
++        }
++        {
++            NifPreviewRenderer vertexColorPreview;
++            auto colored = Triangle();
++            for (auto& v : colored.vertices) v.color = {0.0f, 1.0f, 0.0f, 1.0f};
++            colored.draws.front().material.tintColor = {1.0f, 1.0f, 1.0f};
++            colored.draws.front().material.vertexColors = true;
++            Check(NifPreviewRendererTestAccess::Load(vertexColorPreview, data, std::move(colored)),
++                  "vertex-colored mesh uploaded");
++            vertexColorPreview.Prepare(data, 64, 64);
++            const auto coloredPixels = Readback(data, vertexColorPreview.GetSurfaceView().Get(), 64, 64);
++            Check(std::any_of(coloredPixels.begin(), coloredPixels.end(), [](auto p) {
++                      return (p >> 24) == 255 && ((p >> 8) & 255) > ((p >> 16) & 255) + 30;
++                  }),
++                  "vertex colors tint rendered pixels");
++            vertexColorPreview.BeginShutdown();
++
++            // Aetherius: regressao de animacao de shader em tempo real (ex.: liquido de pocoes).
++            NifPreview::PreviewFloatTrack uvTrack{};
++            uvTrack.target = NifPreview::PreviewAnimationTarget::VOffset;
++            uvTrack.cycle = NifPreview::PreviewAnimationCycle::Loop;
++            uvTrack.startTime = 0.0f;
++            uvTrack.stopTime = 20.0f;
++            uvTrack.keys = {{0.0f, 0.0f}, {20.0f, -1.0f}};
++            float vAt10 = 0.0f;
++            float vAt30 = 0.0f;
++            Check(NifPreview::EvaluateFloatTrack(uvTrack, 10.0f, vAt10) &&
++                      std::abs(vAt10 - (-0.5f)) < 0.001f,
++                  "looping UV track interpolates midpoint");
++            Check(NifPreview::EvaluateFloatTrack(uvTrack, 30.0f, vAt30) &&
++                      std::abs(vAt30 - (-0.5f)) < 0.001f,
++                  "looping UV track wraps past stopTime");
++        }
+         ID3D11ShaderResourceView* retained = view.Get();
+         context->PSSetShaderResources(0, 1, &retained); // Previous compositor draw still bound.
+         NifAPI::CameraState camera;
+diff --git a/tests/UIPlatform/PackedGeometryDecoderTests.cpp b/tests/UIPlatform/PackedGeometryDecoderTests.cpp
+index fdba1ed..af9d798 100644
+--- a/tests/UIPlatform/PackedGeometryDecoderTests.cpp
++++ b/tests/UIPlatform/PackedGeometryDecoderTests.cpp
+@@ -246,5 +246,38 @@ int main()
+     Expect(combined.draws.size() == 2 && combined.draws[1].startIndex == 3,
+            "appended draw ranges are rebased to the combined index array");
+ 
++    // Aetherius: regressao para decodificacao de VF_COLORS (RGBA8).
++    {
++        constexpr std::size_t colorStride = 16;
++        std::vector<std::uint8_t> colorVerts(colorStride * 3, 0);
++        for (std::size_t vertex = 0; vertex < 3; ++vertex)
++        {
++            const auto base = vertex * colorStride;
++            WriteFloat(colorVerts, base, positions[vertex][0]);
++            WriteFloat(colorVerts, base + 4, positions[vertex][1]);
++            WriteFloat(colorVerts, base + 8, positions[vertex][2]);
++            colorVerts[base + 12] = 255;
++            colorVerts[base + 13] = 128;
++            colorVerts[base + 14] = 0;
++            colorVerts[base + 15] = 64;
++        }
++        PackedGeometryLayout colorLayout{};
++        colorLayout.stride = colorStride;
++        colorLayout.positionOffset = 0;
++        colorLayout.hasVertexColor = true;
++        colorLayout.colorOffset = 12;
++        const auto colorDecoded = DecodePackedGeometry(colorVerts, 3, indices, colorLayout);
++        Expect(colorDecoded.error == DecodeError::None, "packed vertex colors decode");
++        Expect(colorDecoded.mesh.vertices[0].color.x > 0.99f &&
++                   std::abs(colorDecoded.mesh.vertices[0].color.y - (128.0f / 255.0f)) < 0.005f &&
++                   colorDecoded.mesh.vertices[0].color.z < 0.01f &&
++                   std::abs(colorDecoded.mesh.vertices[0].color.w - (64.0f / 255.0f)) < 0.005f,
++               "RGBA8 vertex colors map accurately to normalized floats");
++        auto badColorLayout = colorLayout;
++        badColorLayout.colorOffset = 14;
++        Expect(DecodePackedGeometry(colorVerts, 3, indices, badColorLayout).error == DecodeError::InvalidLayout,
++               "vertex color reads outside the stride are rejected");
++    }
++
+     return g_failures == 0 ? 0 : 1;
+ }

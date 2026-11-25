@@ -1,0 +1,10 @@
+# Temporarios e build local
+build/
+out/
+*.pdb
+*.ilk
+*.obj
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
