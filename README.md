@@ -1,6 +1,6 @@
 # AETHERIUS - CORREÇÃO INVENTARIO
 
-> **Versão atual:** `1.3.0` · **Repositório:** https://github.com/NaoTemJuju/Aetherius_Correcao_Inventario · **Acervo Aetherius:** [`docs/acervo/02-sistemas/correcao-inventario/README.md`](docs/acervo/02-sistemas/correcao-inventario/README.md)
+> **Versão atual:** `1.3.1` · **Repositório:** https://github.com/NaoTemJuju/Aetherius_Correcao_Inventario · **Acervo Aetherius:** [`docs/acervo/02-sistemas/correcao-inventario/README.md`](docs/acervo/02-sistemas/correcao-inventario/README.md)
 
 Pacote de correção isolada para o renderizador 3D de prévia de itens no inventário do Aetherius (**MeridianUI 1.5.0 / `NifPreviewRenderer` + `SkyrimNifExtractor` + `NifMaterial.hlsl` + `NativeSurfaceMenu` + `RenderHost`**), projetado como mod separado no Mod Organizer 2 — **sem alterar diretamente** arquivos de `AETHERIUS - UI CORE`, `aetherius-client`, `Particle Patch`, `SMIM`, `Embers XD`, `Awesome Potions` ou `Simple Wearable Lanterns`.
 
@@ -32,7 +32,7 @@ A inspeção direta dos `.nif` vencedores da load order e do código-fonte do Me
 7. **Correção do Environment Mask e do Double-Premultiplied Alpha (`NifMaterial.hlsl` + `RenderHost.cpp`):** usa `normalSample.a` quando não há `_m.dds` explícito e compõe `NativeSurfaceMenu` com `AlphaBlend()` no `RenderHost` (preservando `NonPremultiplied()` intacto para os browsers CEF).
 8. **Calibração fiel do preset `Bright` (usado pelo `AetheriusUIBridge`) e `Neutral` (`NifLighting.h`, v1.2–v1.3):** `AetheriusUIBridge.dll` envia `LightingPreset::Bright`, que antes aplicava dominante azulada e `+0.45 stops` (`1.37×`) de superexposição; `Bright` e `Neutral` foram calibrados em espaço linear quente-neutro (`Bright`: `baseExposureStops = 0.0f`, `ambientTop=(0.34,0.33,0.31)`, `ambientBottom=(0.16,0.155,0.15)`).
 9. **Animações de shader em tempo real (`SkyrimNifExtractor.cpp` + `NifPreviewMesh.h` + `NifPreviewRenderer.cpp` + `NifMaterial.hlsl`, v1.2–v1.3):** extrai `BSLightingShaderPropertyFloatController`, `BSEffectShaderPropertyFloatController` e `NiAlphaController` (`U/V Offset`, `U/V Scale`, `Alpha`, `EmissiveMultiple`, `SpecularStrength`, `EnvironmentScale`, `Glossiness`, `Falloff`) e anima via `gUvTransform` e parâmetros dinâmicos com throttle de 30 FPS em câmera parada (0ms ao girar/dar zoom) — restaurando o líquido animado das poções (*Awesome Potions Simplified*), as espirais da Poeira Lucente (*SMIM*) e o brilho animado da Tocha (*EmbersXD*).
-10. **Eliminação do pisca-pisca em recarregamentos periódicos (`NativeSurfaceMenu.cpp`, v1.3):** preserva o último frame válido enquanto `Status::Loading` roda, evitando que o item suma e volte durante sincronizações periódicas do inventário.
+10. **Eliminação definitiva do pisca-pisca a cada ~5s (`NativeSurfaceMenu.h/.cpp`, v1.3–v1.3.1):** preserva o último frame válido durante `Status::Loading` e aplica janela de debounce de `250 ms` no `SetVisible(false)` quando há modelo `Ready` — absorvendo os ciclos transitórios de `previewHide → previewShow` disparados pelo `preview-controller.js` a cada rajada periódica de snapshots do inventário, mantendo fechamento imediato (`0 ms`) via `ClearNif()`.
 
 ## Estrutura do pacote
 

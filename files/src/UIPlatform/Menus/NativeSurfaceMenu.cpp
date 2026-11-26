@@ -2,6 +2,8 @@
 
 #include "Render/CheckerboardTexture.h"
 
+#include <chrono>
+
 namespace Meridian::Menus
 {
     namespace
@@ -10,6 +12,18 @@ namespace Meridian::Menus
         constexpr std::uint32_t TILE_SIZE = 8;
         constexpr Meridian::Render::RGBA8 DARK_TILE{30, 34, 43, 255};
         constexpr Meridian::Render::RGBA8 LIGHT_TILE{88, 101, 119, 255};
+        // Aetherius: janela de graca (ms) para absorver ciclos transitorios de
+        // previewHide -> previewShow disparados quando o inventario re-renderiza
+        // o DOM a cada snapshot periodico (~5s), eliminando pisca-pisca.
+        // ClearNif() (fechar inventario) cancela essa janela imediatamente (0ms).
+        constexpr std::int64_t HIDE_DEBOUNCE_MS = 250;
+
+        std::int64_t SteadyNowMs()
+        {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now().time_since_epoch())
+                .count();
+        }
     }
 
     NativeSurfaceMenu::NativeSurfaceMenu(int a_x,
@@ -127,9 +141,39 @@ namespace Meridian::Menus
         m_shaderResourceView = std::move(view);
     }
 
+    void NativeSurfaceMenu::SetVisible(bool a_visible)
+    {
+        const bool wasVisible = m_isVisible.load(std::memory_order_acquire);
+        if (a_visible)
+        {
+            m_hiddenSinceMs.store(0, std::memory_order_release);
+        }
+        else if (wasVisible &&
+                 m_nifPreviewRenderer.GetStatus() == Meridian::UI::NifView::Status::Ready)
+        {
+            m_hiddenSinceMs.store(SteadyNowMs(), std::memory_order_release);
+        }
+        IRenderLayer::SetVisible(a_visible);
+    }
+
     void NativeSurfaceMenu::Draw()
     {
-        if (!GetVisible() || !m_ready.load(std::memory_order_acquire) || m_renderData == nullptr)
+        if (!m_ready.load(std::memory_order_acquire) || m_renderData == nullptr)
+        {
+            return;
+        }
+        bool shouldDraw = GetVisible();
+        if (!shouldDraw)
+        {
+            const auto hiddenSince = m_hiddenSinceMs.load(std::memory_order_acquire);
+            if (hiddenSince > 0 &&
+                m_nifPreviewRenderer.GetStatus() == Meridian::UI::NifView::Status::Ready &&
+                (SteadyNowMs() - hiddenSince) < HIDE_DEBOUNCE_MS)
+            {
+                shouldDraw = true;
+            }
+        }
+        if (!shouldDraw)
         {
             return;
         }
@@ -157,6 +201,7 @@ namespace Meridian::Menus
 
     void NativeSurfaceMenu::BeginShutdown()
     {
+        m_hiddenSinceMs.store(0, std::memory_order_release);
         IRenderLayer::BeginShutdown();
         m_ready.store(false, std::memory_order_release);
         m_nifPreviewRenderer.BeginShutdown();
@@ -219,6 +264,7 @@ namespace Meridian::Menus
 
     void NativeSurfaceMenu::ClearNif(std::uint64_t a_generation)
     {
+        m_hiddenSinceMs.store(0, std::memory_order_release);
         m_nifPreviewRenderer.Clear(a_generation);
     }
 

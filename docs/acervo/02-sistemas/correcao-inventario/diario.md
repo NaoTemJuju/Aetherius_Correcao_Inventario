@@ -86,5 +86,18 @@ Registro cronológico da investigação, implementação e validação da corre�
   - Artefatos v1.3.0:
     - `MeridianUI/MeridianUI.dll`: `2.439.168` bytes, SHA-256 `ed467ce2aa4fa4052995bc7caf0f5ce36af2a538233636d796c798c04ebb8d38`.
     - `patch/meridian-inventory-preview-fix.patch`: `97.357` bytes, SHA-256 `ffd1f6a556434fa1b514152c450ec91bd2f6088d18295b9e993f2c72ca6b149e`.
+
+## 2026-11-26 — v1.3.1: Eliminação definitiva do pisca-pisca de 5 segundos (`previewHide → previewShow`)
+- **Diagnóstico empírico (log do servidor + `MeridianUI.log` + `preview-controller.js`):**
+  - O log do servidor mostrou rajadas periódicas de 7 `request inventory snapshot` exatamente a cada `5,0 s`, enquanto `MeridianUI.log` provou que nenhum novo `LoadModel` ocorria (`token === g_previewToken`).
+  - A cada snapshot, `inventory-module.js` re-renderizava o DOM e chamava `preview.mount(area, token)` → `this.hide()` (`g_surfaces->SetVisible(g_preview, false)`) seguido de `show(token)` (`g_surfaces->SetVisible(g_preview, true)`) ~15–90 ms depois, escondendo o modelo por vários frames.
+- **Feito:**
+  - `NativeSurfaceMenu.h/.cpp`: sobrescrito `SetVisible(bool)` e adicionado debounce de `250 ms` (`HIDE_DEBOUNCE_MS`) no `Draw()` enquanto o modelo está `Ready` e apenas `SetVisible(false)` foi chamado; `ClearNif()` (fechamento de inventário) e `BeginShutdown()` zeram imediatamente (`0 ms`).
+- **Testes:**
+  - Build Release limpo (0 erros, 0 warnings); ABI idêntica via `dumpbin`.
+  - CTest: **9/9 aprovados** (`1.01s`); GPU física real aprovada (`DXVK=0 debugQueue=1`).
+  - Artefatos v1.3.1:
+    - `MeridianUI/MeridianUI.dll`: `2.439.680` bytes, SHA-256 `bcf8da13d9cc43543edca1c0c9ebc32d7f1527f9036b3019a269851607fe10c1`.
+    - `patch/meridian-inventory-preview-fix.patch`: `101.209` bytes, SHA-256 `c8ad582df9903a1e9778159d21b30d33b10d4cc92333d038649fddbcf6e9074e`.
 - **Bloqueios:** nenhum.
 - **Nota sobre Acervo Aetherius:** este ambiente não realizou push direto no repositório `pablo-rodrigues1/AETHERIUS-ACERVO-DE-INFORMACOES`; os arquivos `.md` prontos para publicação estão em `docs/acervo/` e o resumo de tabelas em `docs/ATUALIZACOES-ACERVO.md`.
