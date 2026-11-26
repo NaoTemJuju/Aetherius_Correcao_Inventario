@@ -17,6 +17,10 @@ namespace Meridian::Menus
         // o DOM a cada snapshot periodico (~5s), eliminando pisca-pisca.
         // ClearNif() (fechar inventario) cancela essa janela imediatamente (0ms).
         constexpr std::int64_t HIDE_DEBOUNCE_MS = 250;
+        // Aetherius: sensibilidade e margem inferior do trackball 360 graus direto no
+        // preview nativo (evita a faixa dos botoes inferiores de rotacao/zoom).
+        constexpr float TRACKBALL_SENSITIVITY_RAD_PER_PX = 0.0085f;
+        constexpr int PREVIEW_CONTROLS_BOTTOM_MARGIN_PX = 44;
 
         std::int64_t SteadyNowMs()
         {
@@ -202,6 +206,11 @@ namespace Meridian::Menus
     void NativeSurfaceMenu::BeginShutdown()
     {
         m_hiddenSinceMs.store(0, std::memory_order_release);
+        m_pointerPressed.store(false, std::memory_order_release);
+        if (m_dragActivated.exchange(false, std::memory_order_acq_rel))
+        {
+            m_nifPreviewRenderer.SetPointerDragActive(false);
+        }
         IRenderLayer::BeginShutdown();
         m_ready.store(false, std::memory_order_release);
         m_nifPreviewRenderer.BeginShutdown();
@@ -237,6 +246,11 @@ namespace Meridian::Menus
 
     void NativeSurfaceMenu::BeginNifLoad(std::uint64_t a_generation)
     {
+        m_pointerPressed.store(false, std::memory_order_release);
+        if (m_dragActivated.exchange(false, std::memory_order_acq_rel))
+        {
+            m_nifPreviewRenderer.SetPointerDragActive(false);
+        }
         m_nifPreviewRenderer.BeginLoad(a_generation);
     }
 
@@ -265,6 +279,11 @@ namespace Meridian::Menus
     void NativeSurfaceMenu::ClearNif(std::uint64_t a_generation)
     {
         m_hiddenSinceMs.store(0, std::memory_order_release);
+        m_pointerPressed.store(false, std::memory_order_release);
+        if (m_dragActivated.exchange(false, std::memory_order_acq_rel))
+        {
+            m_nifPreviewRenderer.SetPointerDragActive(false);
+        }
         m_nifPreviewRenderer.Clear(a_generation);
     }
 
@@ -288,5 +307,80 @@ namespace Meridian::Menus
     bool NativeSurfaceMenu::FrameNif()
     {
         return m_nifPreviewRenderer.FrameModel();
+    }
+
+    void NativeSurfaceMenu::ObserveMouseButton(RE::ButtonEvent* a_button)
+    {
+        if (a_button == nullptr ||
+            a_button->GetDevice() != RE::INPUT_DEVICE::kMouse ||
+            a_button->GetIDCode() != RE::BSWin32MouseDevice::Key::kLeftButton)
+        {
+            return;
+        }
+
+        if (a_button->IsDown())
+        {
+            if (!m_ready.load(std::memory_order_acquire) ||
+                !GetVisible() ||
+                m_nifPreviewRenderer.GetStatus() != Meridian::UI::NifView::Status::Ready)
+            {
+                return;
+            }
+            const auto menuCursor = RE::MenuCursor::GetSingleton();
+            if (menuCursor == nullptr)
+            {
+                return;
+            }
+            const auto geometry = m_geometryHolder->Get();
+            const int bottomMargin = std::max(PREVIEW_CONTROLS_BOTTOM_MARGIN_PX, geometry.height / 10);
+            const int usableHeight = std::max(0, geometry.height - bottomMargin);
+            const int cursorX = static_cast<int>(menuCursor->cursorPosX);
+            const int cursorY = static_cast<int>(menuCursor->cursorPosY);
+            if (cursorX >= geometry.x && cursorX < geometry.x + geometry.width &&
+                cursorY >= geometry.y && cursorY < geometry.y + usableHeight)
+            {
+                m_pointerPressed.store(true, std::memory_order_release);
+                m_dragActivated.store(false, std::memory_order_release);
+            }
+        }
+        else if (a_button->IsUp())
+        {
+            m_pointerPressed.store(false, std::memory_order_release);
+            if (m_dragActivated.exchange(false, std::memory_order_acq_rel))
+            {
+                m_nifPreviewRenderer.SetPointerDragActive(false);
+            }
+        }
+    }
+
+    void NativeSurfaceMenu::ObserveMouseMove(RE::MouseMoveEvent* a_event)
+    {
+        if (a_event == nullptr || !m_pointerPressed.load(std::memory_order_acquire))
+        {
+            return;
+        }
+        if (!m_ready.load(std::memory_order_acquire) ||
+            m_nifPreviewRenderer.GetStatus() != Meridian::UI::NifView::Status::Ready)
+        {
+            m_pointerPressed.store(false, std::memory_order_release);
+            if (m_dragActivated.exchange(false, std::memory_order_acq_rel))
+            {
+                m_nifPreviewRenderer.SetPointerDragActive(false);
+            }
+            return;
+        }
+        const float dx = static_cast<float>(a_event->mouseInputX);
+        const float dy = static_cast<float>(a_event->mouseInputY);
+        if (dx == 0.0f && dy == 0.0f)
+        {
+            return;
+        }
+        if (!m_dragActivated.exchange(true, std::memory_order_acq_rel))
+        {
+            m_nifPreviewRenderer.SetPointerDragActive(true);
+        }
+        m_nifPreviewRenderer.RotateByScreenDelta(
+            dx * TRACKBALL_SENSITIVITY_RAD_PER_PX,
+            dy * TRACKBALL_SENSITIVITY_RAD_PER_PX);
     }
 }

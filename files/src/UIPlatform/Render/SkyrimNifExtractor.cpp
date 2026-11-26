@@ -1344,6 +1344,48 @@ namespace Meridian::Render::NifPreview
                 }
             }
         }
+        PreviewInventoryMarker ExtractInventoryMarker(RE::NiAVObject* a_root)
+        {
+            PreviewInventoryMarker marker{};
+            if (a_root == nullptr)
+            {
+                return marker;
+            }
+
+            const RE::BSInvMarker* inv = a_root->GetExtraData<RE::BSInvMarker>("INV");
+            if (inv == nullptr && a_root->extra != nullptr)
+            {
+                for (std::uint16_t i = 0; i < a_root->extraDataSize; ++i)
+                {
+                    auto* extra = a_root->extra[i];
+                    if (extra == nullptr)
+                    {
+                        continue;
+                    }
+                    const auto* rtti = extra->GetRTTI();
+                    if (rtti != nullptr && rtti->GetName() != nullptr &&
+                        std::string_view(rtti->GetName()) == "BSInvMarker")
+                    {
+                        inv = static_cast<const RE::BSInvMarker*>(extra);
+                        break;
+                    }
+                }
+            }
+            if (inv == nullptr)
+            {
+                return marker;
+            }
+
+            constexpr float kMilliradiansToRadians = 0.001f;
+            marker.present = true;
+            marker.rotationRadians = {
+                static_cast<float>(inv->rotationX) * kMilliradiansToRadians,
+                static_cast<float>(inv->rotationY) * kMilliradiansToRadians,
+                static_cast<float>(inv->rotationZ) * kMilliradiansToRadians,
+            };
+            marker.zoom = (std::isfinite(inv->zoom) && inv->zoom > 0.01f) ? inv->zoom : 1.0f;
+            return marker;
+        }
     }
 
     ExtractionResult ExtractModelMesh(RE::NiNode* a_root,
@@ -1358,6 +1400,8 @@ namespace Meridian::Render::NifPreview
             result.status = ExtractionStatus::MalformedGeometry;
             return result;
         }
+
+        const PreviewInventoryMarker invMarker = ExtractInventoryMarker(a_root);
 
         ObjectTransformMap transforms;
         transforms.reserve(1'024);
@@ -1401,6 +1445,7 @@ namespace Meridian::Render::NifPreview
                 shapeIndex,
                 visited);
         }
+        result.mesh.inventoryMarker = invMarker;
         if (!result.mesh.Empty())
         {
             result.status = ExtractionStatus::Success;

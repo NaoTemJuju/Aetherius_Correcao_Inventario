@@ -3,7 +3,7 @@ titulo: Diário — Correção da prévia 3D do inventário
 tipo: historico
 status: ativo
 responsaveis: [Akaston]
-atualizado: 2026-11-25
+atualizado: 2026-11-26
 tags: [diario, inventario, meridian, renderizacao]
 relacionados: [README.md]
 ---
@@ -99,5 +99,24 @@ Registro cronológico da investigação, implementação e validação da corre�
   - Artefatos v1.3.1:
     - `MeridianUI/MeridianUI.dll`: `2.439.680` bytes, SHA-256 `bcf8da13d9cc43543edca1c0c9ebc32d7f1527f9036b3019a269851607fe10c1`.
     - `patch/meridian-inventory-preview-fix.patch`: `101.209` bytes, SHA-256 `c8ad582df9903a1e9778159d21b30d33b10d4cc92333d038649fddbcf6e9074e`.
+
+## 2026-11-26 — v1.4.0: Disposição inicial (`BSInvMarker`), escala calibrada e rotação trackball 360° livre no padrão Skyrim vanilla
+- **Diagnóstico empírico (vídeo real de comparação vanilla vs. MeridianUI + inspeção de `BSInvMarker` nos NIFs e de `preview-controller.js`):**
+  1. **Orientação inicial incorreta:** `NifCameraMath.h` (vindo do `changes.patch` oficial) aplicava `OrientToModel`, que ignorava o extra data `INV` (`RE::BSInvMarker`) dos NIFs e forçava o eixo mais longo do bounding box na vertical e o mais fino de frente — tombando Armadura de Aço 90° de lado, colocando Barra de Prata em pé e virando Açúcar da Lua e Armadura Daédrica de perfil.
+  2. **Itens grandes demais:** `RenderFrame` usava `distance = radius * 1.25 / tan(fov/2)` ignorando `BSInvMarker::zoom` (`0.45–1.0` nos NIFs reais), fazendo itens ocuparem quase 100% da área de prévia e encostarem nos botões.
+  3. **Rotação travada em `±75°` e sentido divergente:** `preview-controller.js` clampa `pitch` em `[-75°, +75°]` e `AetheriusUIBridge.dll` rejeita `|pitchDegrees| > 75°`, impedindo girar o item de cabeça para baixo ou 360° livres em qualquer direção.
+- **Feito:**
+  - `SkyrimNifExtractor.cpp` + `NifPreviewMesh.h` + `NifSceneComposition.h`: extração do extra data `RE::BSInvMarker` (`"INV"` + fallback RTTI), convertendo `rotationX/Y/Z * 0.001f` radianos e `zoom`, propagando `inventoryMarker` na composição de cena.
+  - `NifCameraMath.h`: adicionados `BuildInvMarkerQuaternion` (`Rx * Ry * Rz`, idêntico a `RE::NiMatrix3::SetEulerAnglesXYZ`), `BuildDefaultInventoryQuaternion` (`+12° X, -15° Z` para mods sem `BSInvMarker`), `ApplyScreenTrackballDelta` (`q_x(+dy) * q_z(+dx) * q_obj`) e `CameraBasisFromObjectOrientation` (mantendo as luzes de estúdio fixas na tela).
+  - `NifPreviewRenderer.h/.cpp`: modo de câmera de inventário automático em `SubmitScene` (preservando `SubmitSceneBatch` de personagens/atores 100% intacto), enquadramento `radius * 1.65` modulado por `effectiveZoom = clamp(pow(rawZoom, 0.65), 0.58, 1.35)`, preservação da pose do `BSInvMarker` contra o baseline `(20°, 10°)` do JS e integração limpa com os botões `↺ ↻ − +` e scroll de zoom.
+  - `NativeSurfaceMenu.h/.cpp` + `InputRouter.cpp`: observação não-destrutiva do clique/arraste esquerdo sobre o retângulo do preview (excluindo a faixa inferior de botões `max(44px, height/10)` e ativando supressão de `SetCamera` apenas ao mover o mouse), entregando rotação 360° contínua e livre sem gimbal lock nem clamp.
+  - `NifCameraMathTests.cpp`: novos testes unitários cobrindo `BSInvMarker` (Armadura `90° X`, Tigela `45° X`) e trackball 360° (incluindo giro completo 180° de cabeça para baixo e retorno a 360°).
+- **Testes:**
+  - Build Release limpo (0 erros, 0 warnings em `/W4`); ABI idêntica via `dumpbin /EXPORTS` e `/DEPENDENTS`.
+  - CTest: **9/9 aprovados** (`0.80s`), incluindo todos os novos casos de `NifCameraMathTests`.
+  - GPU física real (`NifPreviewGpuTests.exe --unsupported-sharing --hardware`): aprovado com `DXVK=0 debugQueue=1`.
+  - Artefatos v1.4.0:
+    - `MeridianUI/MeridianUI.dll`: `2.453.504` bytes, SHA-256 `2a33491792d6b50712600feb73ee17c5172d7aa9b832b86d7c7822180fc8d168`.
+    - `patch/meridian-inventory-preview-fix.patch`: `132.127` bytes, SHA-256 `418b16e86f3ca36526877710a41b11cd800602d2c6c84ed674637070ccd7e9ef`.
 - **Bloqueios:** nenhum.
 - **Nota sobre Acervo Aetherius:** este ambiente não realizou push direto no repositório `pablo-rodrigues1/AETHERIUS-ACERVO-DE-INFORMACOES`; os arquivos `.md` prontos para publicação estão em `docs/acervo/` e o resumo de tabelas em `docs/ATUALIZACOES-ACERVO.md`.

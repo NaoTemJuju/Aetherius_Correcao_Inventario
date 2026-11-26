@@ -6,7 +6,7 @@ fase: em-teste
 responsaveis: [Akaston]
 repositorio: https://github.com/NaoTemJuju/Aetherius_Correcao_Inventario
 depende_de: [../ui-core/README.md]
-atualizado: 2026-11-25
+atualizado: 2026-11-26
 tags: [inventario, meridian, renderizacao, shader, nif, ui-core]
 relacionados: [diario.md, ../ui-core/README.md, ../../03-decisoes/ADR-0038-correcao-renderizacao-preview-inventario.md, ../../07-guia-da-staff/itens/previa-3d-inventario.md]
 ---
@@ -25,7 +25,8 @@ Correção isolada no pipeline de renderização 3D de inventário do **Meridian
   - `src/UIPlatform/Render/NifPreviewMesh.h`, `NifPreviewRenderer.h` e `NifPreviewRenderer.cpp`: passagem dupla (opacos → transparentes/aditivos), blend state aditivo dedicado, culling de backfaces em transparentes single-sided, fallback seguro para texturas de efeito, avaliação em tempo real de `PreviewFloatTrack` (animação contínua de UV/alpha/emissive/specular) e separação correta de espaço de cor (`DDS_LOADER_FORCE_SRGB` para texturas de cor, `DDS_LOADER_DEFAULT` para normal maps, `DDS_LOADER_IGNORE_SRGB` para máscaras).
   - `src/UIPlatform/Render/Shaders/NifMaterial.hlsl`: caminho dedicado para `BSEffectShaderProperty` (paleta grayscale, falloff, vertex alpha, aditivo), `SV_IsFrontFace`, `VertexColors` (sRGB→linear), `GlowMap`/`OwnEmit`, `gUvTransform` dinâmico, `MATERIAL_ENVMAP_LIGHT_FADE`, especular/cubemap calibrados ao `BSLightingShader` e pipeline linear puro (`LinearToSrgb(ToneMapACES(...))`) com `color * alpha` em `MATERIAL_PREMULTIPLIED_ALPHA`.
   - `src/UIPlatform/Render/NifLighting.h`: calibração quente-neutra em espaço linear para `LightingPreset::Bright` (usado pelo `AetheriusUIBridge.dll`) e `Neutral`.
-  - `src/UIPlatform/Menus/NativeSurfaceMenu.cpp`: preserva o último frame renderizado durante `Status::Loading`, eliminando o pisca-pisca causado por recarregamentos periódicos da sincronização de inventário.
+  - `src/UIPlatform/Render/NifCameraMath.h` e `NifSceneComposition.h`: suporte a `BSInvMarker` (`BuildInvMarkerQuaternion` com `Rx * Ry * Rz`), `CameraBasisFromObjectOrientation` e trackball 360° livre por quaternion (`ApplyScreenTrackballDelta`) em espaço de tela no sentido do Skyrim vanilla.
+  - `src/UIPlatform/Menus/NativeSurfaceMenu.h/.cpp` e `src/UIPlatform/Services/InputRouter.cpp`: preservação do último frame durante `Status::Loading`, debounce de `250 ms` em `SetVisible(false)` (fim do pisca-pisca de 5s) e observação não-destrutiva do arraste esquerdo para rotação 360° livre sem tocar no `AETHERIUS - UI CORE`.
   - `src/UIPlatform/Render/RenderHost.cpp`: composição de `NativeSurfaceMenu` com `AlphaBlend()` (premultiplied) preservando `NonPremultiplied()` para os browsers CEF.
 
 ## Escopo
@@ -44,6 +45,8 @@ Correção isolada no pipeline de renderização 3D de inventário do **Meridian
 | Specular / EnvMap / Vidro | Specular `×0.85`, EnvMap `×0.80 × lerp(0.45, 1.0, fade)`, Fresnel vítreo `lerp(0.45, 1.0, (1-NdotV)²)` | Devolve brilho metálico real em Adaga/Elmo e transparência vítrea com reflexo vertical nas poções |
 | Animação de shader | `gUvTransform = (uScale, vScale, uOffset, vOffset)` via `EvaluateFloatTrack` (throttle 30 FPS) | Reproduz em tempo real o movimento do líquido em poções, wisps da Poeira Lucente e brilho da Tocha sem sobrecarregar o `FrameTransport` |
 | Blend de `NativeSurfaceMenu` | `CommonStates::AlphaBlend()` | Elimina dupla pré-multiplicação (`alpha²`) e permite brilho aditivo sobre o fundo |
+| Disposição e escala inicial | `BSInvMarker` (`Rx * Ry * Rz`) · `dist = radius * 1.65 * aspect / (tan(fov/2) * effZoom)` | Reproduz orientação e enquadramento do `Inventory3DManager` do Skyrim vanilla (sem tombar armaduras/lingotes) |
+| Rotação interativa | Trackball quaternion 360° (`0.0085 rad/px`, `InputRouter` → `NativeSurfaceMenu`) | Rotação 360° livre em todas as direções no sentido vanilla, contornando a trava `±75°` do `preview-controller.js` |
 
 ## Dependências
 | Depende de | Por quê |

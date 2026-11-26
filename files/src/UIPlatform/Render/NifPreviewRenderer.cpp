@@ -138,6 +138,11 @@ namespace Meridian::Render::NifPreview
             m_pendingVisibility.clear();
             m_status.store(Meridian::UI::NifView::Status::Loading, std::memory_order_release);
         }
+        {
+            std::lock_guard lock(m_cameraMutex);
+            m_hasApiCameraBaseline = false;
+            m_pointerDragActive = false;
+        }
     }
 
     void NifPreviewRenderer::SubmitScene(std::uint64_t a_generation,
@@ -180,7 +185,11 @@ namespace Meridian::Render::NifPreview
         {
             return;
         }
-        m_pendingSceneBatch = {a_generation, std::move(a_scenes), a_frameOnLoad};
+        const bool useInventoryCamera =
+            a_scenes.size() == 1 &&
+            a_scenes.front().object == LEGACY_OBJECT_HANDLE &&
+            a_scenes.front().liveActorRoots.empty();
+        m_pendingSceneBatch = {a_generation, std::move(a_scenes), a_frameOnLoad, useInventoryCamera};
         m_hasPendingSceneBatch = true;
         m_clearPending = false;
     }
@@ -260,9 +269,69 @@ namespace Meridian::Render::NifPreview
         {
             std::lock_guard lock(m_cameraMutex);
             m_camera = a_camera;
+            if (m_useInventoryCamera)
+            {
+                const auto now = std::chrono::steady_clock::now();
+                if (!m_hasApiCameraBaseline)
+                {
+                    m_lastApiYawDegrees = a_camera.yawDegrees;
+                    m_lastApiPitchDegrees = a_camera.pitchDegrees;
+                    m_hasApiCameraBaseline = true;
+                }
+                else
+                {
+                    float deltaYaw = a_camera.yawDegrees - m_lastApiYawDegrees;
+                    while (deltaYaw > 180.0f) deltaYaw -= 360.0f;
+                    while (deltaYaw < -180.0f) deltaYaw += 360.0f;
+                    const float deltaPitch = a_camera.pitchDegrees - m_lastApiPitchDegrees;
+                    m_lastApiYawDegrees = a_camera.yawDegrees;
+                    m_lastApiPitchDegrees = a_camera.pitchDegrees;
+                    if (!m_pointerDragActive && now >= m_suppressApiAnglesUntil &&
+                        (std::abs(deltaYaw) > 0.001f || std::abs(deltaPitch) > 0.001f))
+                    {
+                        constexpr float kDegToRad = std::numbers::pi_v<float> / 180.0f;
+                        m_objectOrientation = ApplyScreenTrackballDelta(
+                            m_objectOrientation,
+                            deltaYaw * kDegToRad,
+                            deltaPitch * kDegToRad);
+                    }
+                }
+            }
         }
         m_cameraDirty.store(true, std::memory_order_release);
         return true;
+    }
+
+    void NifPreviewRenderer::SetPointerDragActive(bool a_active)
+    {
+        std::lock_guard lock(m_cameraMutex);
+        m_pointerDragActive = a_active;
+        if (!a_active)
+        {
+            m_suppressApiAnglesUntil =
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+        }
+    }
+
+    void NifPreviewRenderer::RotateByScreenDelta(float a_deltaXRadians, float a_deltaYRadians)
+    {
+        if (m_isShuttingDown.load(std::memory_order_acquire) ||
+            !std::isfinite(a_deltaXRadians) || !std::isfinite(a_deltaYRadians))
+        {
+            return;
+        }
+        {
+            std::lock_guard lock(m_cameraMutex);
+            if (!m_useInventoryCamera)
+            {
+                return;
+            }
+            m_objectOrientation = ApplyScreenTrackballDelta(
+                m_objectOrientation, a_deltaXRadians, a_deltaYRadians);
+            m_suppressApiAnglesUntil =
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+        }
+        m_cameraDirty.store(true, std::memory_order_release);
     }
 
     bool NifPreviewRenderer::SetObjectVisible(
@@ -533,6 +602,31 @@ namespace Meridian::Render::NifPreview
                 BuildMeshResources(m_platformDevice->Device(), std::move(composed.mesh));
             if (meshReady)
             {
+                {
+                    std::lock_guard lock(m_cameraMutex);
+                    m_useInventoryCamera = pending.useInventoryCamera;
+                    if (m_useInventoryCamera)
+                    {
+                        m_objectOrientation = m_inventoryMarker.present
+                            ? BuildInvMarkerQuaternion(m_inventoryMarker.rotationRadians)
+                            : BuildDefaultInventoryQuaternion();
+                        if (!m_hasApiCameraBaseline)
+                        {
+                            // Se o preview-controller.js ja enviou a camera padrao
+                            // (yaw=20, pitch=10) antes do Prepare(), ja registra o
+                            // baseline para o primeiro clique nos botoes girar direto.
+                            if (std::abs(m_camera.yawDegrees - 20.0f) < 0.01f &&
+                                std::abs(m_camera.pitchDegrees - 10.0f) < 0.01f)
+                            {
+                                m_lastApiYawDegrees = m_camera.yawDegrees;
+                                m_lastApiPitchDegrees = m_camera.pitchDegrees;
+                                m_hasApiCameraBaseline = true;
+                            }
+                        }
+                        m_pointerDragActive = false;
+                        m_suppressApiAnglesUntil = {};
+                    }
+                }
                 m_sceneVisibility.clear();
                 for (const auto& object : composed.objects)
                 {
@@ -1037,6 +1131,10 @@ namespace Meridian::Render::NifPreview
         m_animationStartTime = std::chrono::steady_clock::now();
         m_lastAnimationRenderTime = {};
         m_bounds = a_mesh.bounds;
+        {
+            std::lock_guard lock(m_cameraMutex);
+            m_inventoryMarker = a_mesh.inventoryMarker;
+        }
         return true;
     }
 
@@ -1109,9 +1207,15 @@ namespace Meridian::Render::NifPreview
         }
 
         Meridian::UI::NifView::CameraState camera{};
+        bool useInventoryCamera = false;
+        PreviewInventoryMarker inventoryMarker{};
+        Quaternion objectOrientation{};
         {
             std::lock_guard lock(m_cameraMutex);
             camera = m_camera;
+            useInventoryCamera = m_useInventoryCamera;
+            inventoryMarker = m_inventoryMarker;
+            objectOrientation = m_objectOrientation;
         }
 
         const Float3 unpannedCenter{
@@ -1128,11 +1232,25 @@ namespace Meridian::Render::NifPreview
         constexpr float fov = std::numbers::pi_v<float> / 4.0f;
         const auto aspect = static_cast<float>(a_width) / static_cast<float>(a_height);
         const auto aspectAdjustment = aspect < 1.0f ? 1.0f / aspect : 1.0f;
-        const auto distance = radius * 1.25f * aspectAdjustment /
-                              std::tan(fov * 0.5f) * camera.distanceScale;
-        const auto yaw = camera.yawDegrees * std::numbers::pi_v<float> / 180.0f;
-        const auto pitch = camera.pitchDegrees * std::numbers::pi_v<float> / 180.0f;
-        const auto basis = OrientToModel(BuildCameraBasis(yaw, pitch), extent);
+        float distance = radius * 1.25f * aspectAdjustment /
+                         std::tan(fov * 0.5f) * camera.distanceScale;
+        CameraBasis basis{};
+        if (useInventoryCamera)
+        {
+            // Aetherius: enquadramento e orientacao oficial via BSInvMarker + trackball 360 livre.
+            const float rawZoom = inventoryMarker.present ? inventoryMarker.zoom : 0.80f;
+            const float effectiveZoom =
+                std::clamp(std::pow(std::clamp(rawZoom, 0.25f, 2.5f), 0.65f), 0.58f, 1.35f);
+            distance = (radius * 1.65f * aspectAdjustment / std::tan(fov * 0.5f)) /
+                       effectiveZoom * camera.distanceScale;
+            basis = CameraBasisFromObjectOrientation(objectOrientation);
+        }
+        else
+        {
+            const auto yaw = camera.yawDegrees * std::numbers::pi_v<float> / 180.0f;
+            const auto pitch = camera.pitchDegrees * std::numbers::pi_v<float> / 180.0f;
+            basis = OrientToModel(BuildCameraBasis(yaw, pitch), extent);
+        }
         const auto lighting = BuildLightingRig(
             camera.lightingPreset, camera.exposureStops, basis);
         const auto modelCenter = ApplyNormalizedPan(
@@ -1495,6 +1613,14 @@ namespace Meridian::Render::NifPreview
         m_textureCache.clear();
         m_bounds = {};
         m_hasAnimatedMaterials = false;
+        {
+            std::lock_guard lock(m_cameraMutex);
+            m_useInventoryCamera = false;
+            m_inventoryMarker = {};
+            m_hasApiCameraBaseline = false;
+            m_pointerDragActive = false;
+            m_suppressApiAnglesUntil = {};
+        }
         m_cameraDirty.store(false, std::memory_order_release);
     }
 }

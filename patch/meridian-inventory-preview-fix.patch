@@ -1,5 +1,5 @@
 diff --git a/src/UIPlatform/Menus/NativeSurfaceMenu.cpp b/src/UIPlatform/Menus/NativeSurfaceMenu.cpp
-index e3e07bc..1bd3a25 100644
+index e3e07bc..8e31043 100644
 --- a/src/UIPlatform/Menus/NativeSurfaceMenu.cpp
 +++ b/src/UIPlatform/Menus/NativeSurfaceMenu.cpp
 @@ -2,6 +2,8 @@
@@ -11,7 +11,7 @@ index e3e07bc..1bd3a25 100644
  namespace Meridian::Menus
  {
      namespace
-@@ -10,6 +12,18 @@ namespace Meridian::Menus
+@@ -10,6 +12,22 @@ namespace Meridian::Menus
          constexpr std::uint32_t TILE_SIZE = 8;
          constexpr Meridian::Render::RGBA8 DARK_TILE{30, 34, 43, 255};
          constexpr Meridian::Render::RGBA8 LIGHT_TILE{88, 101, 119, 255};
@@ -20,6 +20,10 @@ index e3e07bc..1bd3a25 100644
 +        // o DOM a cada snapshot periodico (~5s), eliminando pisca-pisca.
 +        // ClearNif() (fechar inventario) cancela essa janela imediatamente (0ms).
 +        constexpr std::int64_t HIDE_DEBOUNCE_MS = 250;
++        // Aetherius: sensibilidade e margem inferior do trackball 360 graus direto no
++        // preview nativo (evita a faixa dos botoes inferiores de rotacao/zoom).
++        constexpr float TRACKBALL_SENSITIVITY_RAD_PER_PX = 0.0085f;
++        constexpr int PREVIEW_CONTROLS_BOTTOM_MARGIN_PX = 44;
 +
 +        std::int64_t SteadyNowMs()
 +        {
@@ -30,7 +34,7 @@ index e3e07bc..1bd3a25 100644
      }
  
      NativeSurfaceMenu::NativeSurfaceMenu(int a_x,
-@@ -105,10 +119,17 @@ namespace Meridian::Menus
+@@ -105,10 +123,17 @@ namespace Meridian::Menus
  
          // The checkerboard is a diagnostic for an empty native surface, not
          // inventory content. Pending/failed models leave the game visible.
@@ -50,7 +54,7 @@ index e3e07bc..1bd3a25 100644
          {
              const auto modelView = m_nifPreviewRenderer.GetSurfaceView();
              if (modelView != nullptr)
-@@ -120,9 +141,39 @@ namespace Meridian::Menus
+@@ -120,9 +145,39 @@ namespace Meridian::Menus
          m_shaderResourceView = std::move(view);
      }
  
@@ -91,24 +95,126 @@ index e3e07bc..1bd3a25 100644
          {
              return;
          }
-@@ -150,6 +201,7 @@ namespace Meridian::Menus
+@@ -150,6 +205,12 @@ namespace Meridian::Menus
  
      void NativeSurfaceMenu::BeginShutdown()
      {
 +        m_hiddenSinceMs.store(0, std::memory_order_release);
++        m_pointerPressed.store(false, std::memory_order_release);
++        if (m_dragActivated.exchange(false, std::memory_order_acq_rel))
++        {
++            m_nifPreviewRenderer.SetPointerDragActive(false);
++        }
          IRenderLayer::BeginShutdown();
          m_ready.store(false, std::memory_order_release);
          m_nifPreviewRenderer.BeginShutdown();
-@@ -212,6 +264,7 @@ namespace Meridian::Menus
+@@ -185,6 +246,11 @@ namespace Meridian::Menus
+ 
+     void NativeSurfaceMenu::BeginNifLoad(std::uint64_t a_generation)
+     {
++        m_pointerPressed.store(false, std::memory_order_release);
++        if (m_dragActivated.exchange(false, std::memory_order_acq_rel))
++        {
++            m_nifPreviewRenderer.SetPointerDragActive(false);
++        }
+         m_nifPreviewRenderer.BeginLoad(a_generation);
+     }
+ 
+@@ -212,6 +278,12 @@ namespace Meridian::Menus
  
      void NativeSurfaceMenu::ClearNif(std::uint64_t a_generation)
      {
 +        m_hiddenSinceMs.store(0, std::memory_order_release);
++        m_pointerPressed.store(false, std::memory_order_release);
++        if (m_dragActivated.exchange(false, std::memory_order_acq_rel))
++        {
++            m_nifPreviewRenderer.SetPointerDragActive(false);
++        }
          m_nifPreviewRenderer.Clear(a_generation);
      }
  
+@@ -236,4 +308,79 @@ namespace Meridian::Menus
+     {
+         return m_nifPreviewRenderer.FrameModel();
+     }
++
++    void NativeSurfaceMenu::ObserveMouseButton(RE::ButtonEvent* a_button)
++    {
++        if (a_button == nullptr ||
++            a_button->GetDevice() != RE::INPUT_DEVICE::kMouse ||
++            a_button->GetIDCode() != RE::BSWin32MouseDevice::Key::kLeftButton)
++        {
++            return;
++        }
++
++        if (a_button->IsDown())
++        {
++            if (!m_ready.load(std::memory_order_acquire) ||
++                !GetVisible() ||
++                m_nifPreviewRenderer.GetStatus() != Meridian::UI::NifView::Status::Ready)
++            {
++                return;
++            }
++            const auto menuCursor = RE::MenuCursor::GetSingleton();
++            if (menuCursor == nullptr)
++            {
++                return;
++            }
++            const auto geometry = m_geometryHolder->Get();
++            const int bottomMargin = std::max(PREVIEW_CONTROLS_BOTTOM_MARGIN_PX, geometry.height / 10);
++            const int usableHeight = std::max(0, geometry.height - bottomMargin);
++            const int cursorX = static_cast<int>(menuCursor->cursorPosX);
++            const int cursorY = static_cast<int>(menuCursor->cursorPosY);
++            if (cursorX >= geometry.x && cursorX < geometry.x + geometry.width &&
++                cursorY >= geometry.y && cursorY < geometry.y + usableHeight)
++            {
++                m_pointerPressed.store(true, std::memory_order_release);
++                m_dragActivated.store(false, std::memory_order_release);
++            }
++        }
++        else if (a_button->IsUp())
++        {
++            m_pointerPressed.store(false, std::memory_order_release);
++            if (m_dragActivated.exchange(false, std::memory_order_acq_rel))
++            {
++                m_nifPreviewRenderer.SetPointerDragActive(false);
++            }
++        }
++    }
++
++    void NativeSurfaceMenu::ObserveMouseMove(RE::MouseMoveEvent* a_event)
++    {
++        if (a_event == nullptr || !m_pointerPressed.load(std::memory_order_acquire))
++        {
++            return;
++        }
++        if (!m_ready.load(std::memory_order_acquire) ||
++            m_nifPreviewRenderer.GetStatus() != Meridian::UI::NifView::Status::Ready)
++        {
++            m_pointerPressed.store(false, std::memory_order_release);
++            if (m_dragActivated.exchange(false, std::memory_order_acq_rel))
++            {
++                m_nifPreviewRenderer.SetPointerDragActive(false);
++            }
++            return;
++        }
++        const float dx = static_cast<float>(a_event->mouseInputX);
++        const float dy = static_cast<float>(a_event->mouseInputY);
++        if (dx == 0.0f && dy == 0.0f)
++        {
++            return;
++        }
++        if (!m_dragActivated.exchange(true, std::memory_order_acq_rel))
++        {
++            m_nifPreviewRenderer.SetPointerDragActive(true);
++        }
++        m_nifPreviewRenderer.RotateByScreenDelta(
++            dx * TRACKBALL_SENSITIVITY_RAD_PER_PX,
++            dy * TRACKBALL_SENSITIVITY_RAD_PER_PX);
++    }
+ }
 diff --git a/src/UIPlatform/Menus/NativeSurfaceMenu.h b/src/UIPlatform/Menus/NativeSurfaceMenu.h
-index a20065f..0c13d23 100644
+index a20065f..546d446 100644
 --- a/src/UIPlatform/Menus/NativeSurfaceMenu.h
 +++ b/src/UIPlatform/Menus/NativeSurfaceMenu.h
 @@ -24,6 +24,7 @@ namespace Meridian::Menus
@@ -119,13 +225,136 @@ index a20065f..0c13d23 100644
          void Prepare() override;
          void Draw() override;
          void BeginShutdown() override;
-@@ -60,5 +61,6 @@ namespace Meridian::Menus
+@@ -52,6 +53,9 @@ namespace Meridian::Menus
+                                  bool a_visible);
+         bool FrameNif();
+ 
++        void ObserveMouseButton(RE::ButtonEvent* a_button);
++        void ObserveMouseMove(RE::MouseMoveEvent* a_event);
++
+     private:
+         std::shared_ptr<LayerGeometryHolder> m_geometryHolder;
+         mutable std::mutex m_resourceMutex;
+@@ -60,5 +64,8 @@ namespace Meridian::Menus
          Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_shaderResourceView;
          Meridian::Render::NifPreview::NifPreviewRenderer m_nifPreviewRenderer;
          std::atomic_bool m_ready{false};
 +        std::atomic<std::int64_t> m_hiddenSinceMs{0};
++        std::atomic_bool m_pointerPressed{false};
++        std::atomic_bool m_dragActivated{false};
      };
  }
+diff --git a/src/UIPlatform/Render/NifCameraMath.h b/src/UIPlatform/Render/NifCameraMath.h
+index f5c45de..4e4e781 100644
+--- a/src/UIPlatform/Render/NifCameraMath.h
++++ b/src/UIPlatform/Render/NifCameraMath.h
+@@ -60,6 +60,106 @@ namespace Meridian::Render::NifPreview
+         return {map(a_basis.eyeDirection), map(a_basis.right), map(a_basis.up)};
+     }
+ 
++    struct Quaternion
++    {
++        float x = 0.0f;
++        float y = 0.0f;
++        float z = 0.0f;
++        float w = 1.0f;
++    };
++
++    inline Quaternion NormalizeQuaternion(const Quaternion& a_q)
++    {
++        const float lenSq = a_q.x * a_q.x + a_q.y * a_q.y + a_q.z * a_q.z + a_q.w * a_q.w;
++        if (!std::isfinite(lenSq) || lenSq <= 1.0e-12f)
++        {
++            return {};
++        }
++        const float invLen = 1.0f / std::sqrt(lenSq);
++        return {a_q.x * invLen, a_q.y * invLen, a_q.z * invLen, a_q.w * invLen};
++    }
++
++    inline Quaternion MultiplyQuaternion(const Quaternion& a_left, const Quaternion& a_right)
++    {
++        return {
++            a_left.w * a_right.x + a_left.x * a_right.w + a_left.y * a_right.z - a_left.z * a_right.y,
++            a_left.w * a_right.y - a_left.x * a_right.z + a_left.y * a_right.w + a_left.z * a_right.x,
++            a_left.w * a_right.z + a_left.x * a_right.y - a_left.y * a_right.x + a_left.z * a_right.w,
++            a_left.w * a_right.w - a_left.x * a_right.x - a_left.y * a_right.y - a_left.z * a_right.z,
++        };
++    }
++
++    inline Quaternion ConjugateQuaternion(const Quaternion& a_q)
++    {
++        return {-a_q.x, -a_q.y, -a_q.z, a_q.w};
++    }
++
++    inline Quaternion QuaternionFromAxisAngle(const Float3& a_axis, float a_radians)
++    {
++        const auto n = Normalize(a_axis);
++        const float half = a_radians * 0.5f;
++        const float s = std::sin(half);
++        const float c = std::cos(half);
++        return {n.x * s, n.y * s, n.z * s, c};
++    }
++
++    inline Float3 RotateVector(const Quaternion& a_q, const Float3& a_v)
++    {
++        const Float3 u{a_q.x, a_q.y, a_q.z};
++        const Float3 t = Cross(u, a_v);
++        const Float3 t2{t.x * 2.0f, t.y * 2.0f, t.z * 2.0f};
++        const Float3 c = Cross(u, t2);
++        return {
++            a_v.x + a_q.w * t2.x + c.x,
++            a_v.y + a_q.w * t2.y + c.y,
++            a_v.z + a_q.w * t2.z + c.z,
++        };
++    }
++
++    // Aetherius: reproduz exatamente RE::NiMatrix3::SetEulerAnglesXYZ (R = Rx * Ry * Rz)
++    // usado pelo BSInvMarker do Inventory3DManager do Skyrim SE.
++    inline Quaternion BuildInvMarkerQuaternion(const Float3& a_eulerXYZRadians)
++    {
++        const auto qx = QuaternionFromAxisAngle({1.0f, 0.0f, 0.0f}, a_eulerXYZRadians.x);
++        const auto qy = QuaternionFromAxisAngle({0.0f, 1.0f, 0.0f}, a_eulerXYZRadians.y);
++        const auto qz = QuaternionFromAxisAngle({0.0f, 0.0f, 1.0f}, a_eulerXYZRadians.z);
++        return NormalizeQuaternion(MultiplyQuaternion(MultiplyQuaternion(qx, qy), qz));
++    }
++
++    // Orientacao natural para itens de mods sem BSInvMarker: mantem +Z para cima
++    // com leve inclinacao estetica (12 deg em X, -15 deg em Z), sem tombar o modelo.
++    inline Quaternion BuildDefaultInventoryQuaternion()
++    {
++        constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
++        return BuildInvMarkerQuaternion({12.0f * kDegToRad, 0.0f, -15.0f * kDegToRad});
++    }
++
++    // Rotacao livre 360 graus em espaco de tela (mesmo sentido do Skyrim vanilla):
++    // +deltaX (mouse para direita) gira a frente do item para a direita (+Z_screen);
++    // +deltaY (mouse para baixo) puxa o topo do item para frente/baixo (+X_screen).
++    inline Quaternion ApplyScreenTrackballDelta(const Quaternion& a_current,
++                                                float a_deltaXRadians,
++                                                float a_deltaYRadians)
++    {
++        const auto qYaw = QuaternionFromAxisAngle({0.0f, 0.0f, 1.0f}, a_deltaXRadians);
++        const auto qPitch = QuaternionFromAxisAngle({1.0f, 0.0f, 0.0f}, a_deltaYRadians);
++        const auto qDelta = MultiplyQuaternion(qPitch, qYaw);
++        return NormalizeQuaternion(MultiplyQuaternion(qDelta, a_current));
++    }
++
++    // Converte a orientacao 3D do item no referencial fixo do Inventory3DManager
++    // (camera em -Y olhando para +Y, +X direita, +Z cima) para a CameraBasis equivalente,
++    // mantendo as luzes de estudio fixas em relacao a tela.
++    inline CameraBasis CameraBasisFromObjectOrientation(const Quaternion& a_objectOrientation)
++    {
++        const auto inv = ConjugateQuaternion(NormalizeQuaternion(a_objectOrientation));
++        return {
++            .eyeDirection = Normalize(RotateVector(inv, {0.0f, -1.0f, 0.0f})),
++            .right = Normalize(RotateVector(inv, {1.0f, 0.0f, 0.0f})),
++            .up = Normalize(RotateVector(inv, {0.0f, 0.0f, 1.0f})),
++        };
++    }
++
+     inline Float3 ApplyNormalizedPan(const Float3& a_center,
+                                      float a_radius,
+                                      const CameraBasis& a_basis,
 diff --git a/src/UIPlatform/Render/NifLighting.h b/src/UIPlatform/Render/NifLighting.h
 index f1c3f6d..fe57ccd 100644
 --- a/src/UIPlatform/Render/NifLighting.h
@@ -185,7 +414,7 @@ index f1c3f6d..fe57ccd 100644
              }
          }
 diff --git a/src/UIPlatform/Render/NifPreviewMesh.h b/src/UIPlatform/Render/NifPreviewMesh.h
-index 3d1733d..c39147f 100644
+index 3d1733d..312f01f 100644
 --- a/src/UIPlatform/Render/NifPreviewMesh.h
 +++ b/src/UIPlatform/Render/NifPreviewMesh.h
 @@ -24,6 +24,7 @@ namespace Meridian::Render::NifPreview
@@ -387,8 +616,29 @@ index 3d1733d..c39147f 100644
      };
  
      struct PreviewDrawRange
+@@ -171,12 +321,20 @@ namespace Meridian::Render::NifPreview
+         }
+     };
+ 
++    struct PreviewInventoryMarker
++    {
++        bool present = false;
++        Float3 rotationRadians{};
++        float zoom = 1.0f;
++    };
++
+     struct PreviewMesh
+     {
+         std::vector<PreviewVertex> vertices;
+         std::vector<std::uint32_t> indices;
+         std::vector<PreviewDrawRange> draws;
+         PreviewBounds bounds{};
++        PreviewInventoryMarker inventoryMarker{};
+ 
+         bool Empty() const
+         {
 diff --git a/src/UIPlatform/Render/NifPreviewRenderer.cpp b/src/UIPlatform/Render/NifPreviewRenderer.cpp
-index aae405a..e8b9515 100644
+index aae405a..e6d3cf4 100644
 --- a/src/UIPlatform/Render/NifPreviewRenderer.cpp
 +++ b/src/UIPlatform/Render/NifPreviewRenderer.cpp
 @@ -41,6 +41,18 @@ namespace Meridian::Render::NifPreview
@@ -438,7 +688,136 @@ index aae405a..e8b9515 100644
          m_states.reset();
          m_platformDevice.reset();
      }
-@@ -591,9 +609,26 @@ namespace Meridian::Render::NifPreview
+@@ -120,6 +138,11 @@ namespace Meridian::Render::NifPreview
+             m_pendingVisibility.clear();
+             m_status.store(Meridian::UI::NifView::Status::Loading, std::memory_order_release);
+         }
++        {
++            std::lock_guard lock(m_cameraMutex);
++            m_hasApiCameraBaseline = false;
++            m_pointerDragActive = false;
++        }
+     }
+ 
+     void NifPreviewRenderer::SubmitScene(std::uint64_t a_generation,
+@@ -162,7 +185,11 @@ namespace Meridian::Render::NifPreview
+         {
+             return;
+         }
+-        m_pendingSceneBatch = {a_generation, std::move(a_scenes), a_frameOnLoad};
++        const bool useInventoryCamera =
++            a_scenes.size() == 1 &&
++            a_scenes.front().object == LEGACY_OBJECT_HANDLE &&
++            a_scenes.front().liveActorRoots.empty();
++        m_pendingSceneBatch = {a_generation, std::move(a_scenes), a_frameOnLoad, useInventoryCamera};
+         m_hasPendingSceneBatch = true;
+         m_clearPending = false;
+     }
+@@ -242,11 +269,71 @@ namespace Meridian::Render::NifPreview
+         {
+             std::lock_guard lock(m_cameraMutex);
+             m_camera = a_camera;
++            if (m_useInventoryCamera)
++            {
++                const auto now = std::chrono::steady_clock::now();
++                if (!m_hasApiCameraBaseline)
++                {
++                    m_lastApiYawDegrees = a_camera.yawDegrees;
++                    m_lastApiPitchDegrees = a_camera.pitchDegrees;
++                    m_hasApiCameraBaseline = true;
++                }
++                else
++                {
++                    float deltaYaw = a_camera.yawDegrees - m_lastApiYawDegrees;
++                    while (deltaYaw > 180.0f) deltaYaw -= 360.0f;
++                    while (deltaYaw < -180.0f) deltaYaw += 360.0f;
++                    const float deltaPitch = a_camera.pitchDegrees - m_lastApiPitchDegrees;
++                    m_lastApiYawDegrees = a_camera.yawDegrees;
++                    m_lastApiPitchDegrees = a_camera.pitchDegrees;
++                    if (!m_pointerDragActive && now >= m_suppressApiAnglesUntil &&
++                        (std::abs(deltaYaw) > 0.001f || std::abs(deltaPitch) > 0.001f))
++                    {
++                        constexpr float kDegToRad = std::numbers::pi_v<float> / 180.0f;
++                        m_objectOrientation = ApplyScreenTrackballDelta(
++                            m_objectOrientation,
++                            deltaYaw * kDegToRad,
++                            deltaPitch * kDegToRad);
++                    }
++                }
++            }
+         }
+         m_cameraDirty.store(true, std::memory_order_release);
+         return true;
+     }
+ 
++    void NifPreviewRenderer::SetPointerDragActive(bool a_active)
++    {
++        std::lock_guard lock(m_cameraMutex);
++        m_pointerDragActive = a_active;
++        if (!a_active)
++        {
++            m_suppressApiAnglesUntil =
++                std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
++        }
++    }
++
++    void NifPreviewRenderer::RotateByScreenDelta(float a_deltaXRadians, float a_deltaYRadians)
++    {
++        if (m_isShuttingDown.load(std::memory_order_acquire) ||
++            !std::isfinite(a_deltaXRadians) || !std::isfinite(a_deltaYRadians))
++        {
++            return;
++        }
++        {
++            std::lock_guard lock(m_cameraMutex);
++            if (!m_useInventoryCamera)
++            {
++                return;
++            }
++            m_objectOrientation = ApplyScreenTrackballDelta(
++                m_objectOrientation, a_deltaXRadians, a_deltaYRadians);
++            m_suppressApiAnglesUntil =
++                std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
++        }
++        m_cameraDirty.store(true, std::memory_order_release);
++    }
++
+     bool NifPreviewRenderer::SetObjectVisible(
+         Meridian::UI::NifScene::ObjectHandle a_object,
+         bool a_visible)
+@@ -515,6 +602,31 @@ namespace Meridian::Render::NifPreview
+                 BuildMeshResources(m_platformDevice->Device(), std::move(composed.mesh));
+             if (meshReady)
+             {
++                {
++                    std::lock_guard lock(m_cameraMutex);
++                    m_useInventoryCamera = pending.useInventoryCamera;
++                    if (m_useInventoryCamera)
++                    {
++                        m_objectOrientation = m_inventoryMarker.present
++                            ? BuildInvMarkerQuaternion(m_inventoryMarker.rotationRadians)
++                            : BuildDefaultInventoryQuaternion();
++                        if (!m_hasApiCameraBaseline)
++                        {
++                            // Se o preview-controller.js ja enviou a camera padrao
++                            // (yaw=20, pitch=10) antes do Prepare(), ja registra o
++                            // baseline para o primeiro clique nos botoes girar direto.
++                            if (std::abs(m_camera.yawDegrees - 20.0f) < 0.01f &&
++                                std::abs(m_camera.pitchDegrees - 10.0f) < 0.01f)
++                            {
++                                m_lastApiYawDegrees = m_camera.yawDegrees;
++                                m_lastApiPitchDegrees = m_camera.pitchDegrees;
++                                m_hasApiCameraBaseline = true;
++                            }
++                        }
++                        m_pointerDragActive = false;
++                        m_suppressApiAnglesUntil = {};
++                    }
++                }
+                 m_sceneVisibility.clear();
+                 for (const auto& object : composed.objects)
+                 {
+@@ -591,9 +703,26 @@ namespace Meridian::Render::NifPreview
          }
  
          const bool targetChanged = targetWidth != m_targetWidth || targetHeight != m_targetHeight;
@@ -446,8 +825,7 @@ index aae405a..e8b9515 100644
 +        const bool cameraChanged = m_cameraDirty.exchange(false, std::memory_order_acq_rel);
 +        bool animationTick = false;
 +        if (m_hasAnimatedMaterials && !targetChanged && !cameraChanged)
-         {
--            if (!RenderFrame(targetWidth, targetHeight))
++        {
 +            const auto now = std::chrono::steady_clock::now();
 +            if (now - m_lastAnimationRenderTime >= std::chrono::milliseconds(33))
 +            {
@@ -455,7 +833,8 @@ index aae405a..e8b9515 100644
 +            }
 +        }
 +        if (targetChanged || cameraChanged || animationTick)
-+        {
+         {
+-            if (!RenderFrame(targetWidth, targetHeight))
 +            if (RenderFrame(targetWidth, targetHeight))
 +            {
 +                if (m_hasAnimatedMaterials)
@@ -467,7 +846,7 @@ index aae405a..e8b9515 100644
              {
                  m_status.store(Meridian::UI::NifView::Status::Failed, std::memory_order_release);
              }
-@@ -661,6 +696,7 @@ namespace Meridian::Render::NifPreview
+@@ -661,6 +790,7 @@ namespace Meridian::Render::NifPreview
                  {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, static_cast<UINT>(offsetof(GpuVertex, normal)), D3D11_INPUT_PER_VERTEX_DATA, 0},
                  {"TANGENT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, static_cast<UINT>(offsetof(GpuVertex, tangent)), D3D11_INPUT_PER_VERTEX_DATA, 0},
                  {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, static_cast<UINT>(offsetof(GpuVertex, textureCoordinate)), D3D11_INPUT_PER_VERTEX_DATA, 0},
@@ -475,7 +854,7 @@ index aae405a..e8b9515 100644
              };
              Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
              if (FAILED(platformDevice->Device()->CreateInputLayout(
-@@ -696,8 +732,10 @@ namespace Meridian::Render::NifPreview
+@@ -696,8 +826,10 @@ namespace Meridian::Render::NifPreview
              };
  
              Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> fallbackWhiteTexture;
@@ -486,7 +865,7 @@ index aae405a..e8b9515 100644
                  !createFallbackTexture(0xFFFF8080u, fallbackNormalTexture))
              {
                  spdlog::error("{}: private-device fallback material textures failed",
-@@ -705,6 +743,24 @@ namespace Meridian::Render::NifPreview
+@@ -705,6 +837,24 @@ namespace Meridian::Render::NifPreview
                  return false;
              }
  
@@ -511,7 +890,7 @@ index aae405a..e8b9515 100644
              const auto createConstantBuffer = [&](UINT a_size,
                                                    Microsoft::WRL::ComPtr<ID3D11Buffer>& a_buffer) {
                  D3D11_BUFFER_DESC desc{};
-@@ -739,7 +795,9 @@ namespace Meridian::Render::NifPreview
+@@ -739,7 +889,9 @@ namespace Meridian::Render::NifPreview
              m_sceneConstantBuffer = std::move(sceneConstantBuffer);
              m_materialConstantBuffer = std::move(materialConstantBuffer);
              m_fallbackWhiteTexture = std::move(fallbackWhiteTexture);
@@ -521,7 +900,7 @@ index aae405a..e8b9515 100644
              m_transportReady = true;
          }
          catch (const std::exception& error)
-@@ -754,7 +812,8 @@ namespace Meridian::Render::NifPreview
+@@ -754,7 +906,8 @@ namespace Meridian::Render::NifPreview
          ID3D11Device* a_device,
          std::string_view a_path,
          bool a_srgb,
@@ -531,7 +910,7 @@ index aae405a..e8b9515 100644
      {
          if (a_device == nullptr || a_path.empty())
          {
-@@ -770,7 +829,7 @@ namespace Meridian::Render::NifPreview
+@@ -770,7 +923,7 @@ namespace Meridian::Render::NifPreview
              return nullptr;
          }
          const auto cacheKey = normalizedPath +
@@ -540,7 +919,7 @@ index aae405a..e8b9515 100644
                                (a_requireCube ? "|cube" : "|2d");
          if (const auto cached = m_textureCache.find(cacheKey); cached != m_textureCache.end())
          {
-@@ -782,7 +841,12 @@ namespace Meridian::Render::NifPreview
+@@ -782,7 +935,12 @@ namespace Meridian::Render::NifPreview
          if (resource.error == TextureReadError::None)
          {
              ::DirectX::DDS_ALPHA_MODE ddsAlpha = ::DirectX::DDS_ALPHA_MODE_UNKNOWN;
@@ -554,7 +933,7 @@ index aae405a..e8b9515 100644
              const auto hr = ::DirectX::CreateDDSTextureFromMemoryEx(
                  a_device,
                  resource.bytes.data(),
-@@ -853,6 +917,7 @@ namespace Meridian::Render::NifPreview
+@@ -853,6 +1011,7 @@ namespace Meridian::Render::NifPreview
                  {vertex.normal.x, vertex.normal.y, vertex.normal.z},
                  {vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, vertex.tangent.w},
                  {vertex.textureCoordinate.x, vertex.textureCoordinate.y},
@@ -562,7 +941,7 @@ index aae405a..e8b9515 100644
              });
          }
  
-@@ -909,9 +974,17 @@ namespace Meridian::Render::NifPreview
+@@ -909,9 +1068,17 @@ namespace Meridian::Render::NifPreview
              loaded.material = draw.material;
  
              loaded.diffuseTexture = LoadTextureResource(
@@ -581,7 +960,7 @@ index aae405a..e8b9515 100644
                  // An explicit diffuse that failed to load is not an untextured
                  // mesh. Do not present the white fallback as the item's look.
                  spdlog::warn("NifPreviewRenderer: diffuse texture '{}' unavailable; preview refused",
-@@ -921,24 +994,32 @@ namespace Meridian::Render::NifPreview
+@@ -921,24 +1088,32 @@ namespace Meridian::Render::NifPreview
              }
              if (draw.material.tangentSpaceNormal || draw.material.modelSpaceNormal)
              {
@@ -620,7 +999,7 @@ index aae405a..e8b9515 100644
              }
              m_draws.push_back(std::move(loaded));
          }
-@@ -947,6 +1028,14 @@ namespace Meridian::Render::NifPreview
+@@ -947,7 +1122,19 @@ namespace Meridian::Render::NifPreview
              ResetModelResources();
              return false;
          }
@@ -633,9 +1012,61 @@ index aae405a..e8b9515 100644
 +        m_animationStartTime = std::chrono::steady_clock::now();
 +        m_lastAnimationRenderTime = {};
          m_bounds = a_mesh.bounds;
++        {
++            std::lock_guard lock(m_cameraMutex);
++            m_inventoryMarker = a_mesh.inventoryMarker;
++        }
          return true;
      }
-@@ -1123,6 +1212,16 @@ namespace Meridian::Render::NifPreview
+ 
+@@ -1020,9 +1207,15 @@ namespace Meridian::Render::NifPreview
+         }
+ 
+         Meridian::UI::NifView::CameraState camera{};
++        bool useInventoryCamera = false;
++        PreviewInventoryMarker inventoryMarker{};
++        Quaternion objectOrientation{};
+         {
+             std::lock_guard lock(m_cameraMutex);
+             camera = m_camera;
++            useInventoryCamera = m_useInventoryCamera;
++            inventoryMarker = m_inventoryMarker;
++            objectOrientation = m_objectOrientation;
+         }
+ 
+         const Float3 unpannedCenter{
+@@ -1039,11 +1232,25 @@ namespace Meridian::Render::NifPreview
+         constexpr float fov = std::numbers::pi_v<float> / 4.0f;
+         const auto aspect = static_cast<float>(a_width) / static_cast<float>(a_height);
+         const auto aspectAdjustment = aspect < 1.0f ? 1.0f / aspect : 1.0f;
+-        const auto distance = radius * 1.25f * aspectAdjustment /
+-                              std::tan(fov * 0.5f) * camera.distanceScale;
+-        const auto yaw = camera.yawDegrees * std::numbers::pi_v<float> / 180.0f;
+-        const auto pitch = camera.pitchDegrees * std::numbers::pi_v<float> / 180.0f;
+-        const auto basis = OrientToModel(BuildCameraBasis(yaw, pitch), extent);
++        float distance = radius * 1.25f * aspectAdjustment /
++                         std::tan(fov * 0.5f) * camera.distanceScale;
++        CameraBasis basis{};
++        if (useInventoryCamera)
++        {
++            // Aetherius: enquadramento e orientacao oficial via BSInvMarker + trackball 360 livre.
++            const float rawZoom = inventoryMarker.present ? inventoryMarker.zoom : 0.80f;
++            const float effectiveZoom =
++                std::clamp(std::pow(std::clamp(rawZoom, 0.25f, 2.5f), 0.65f), 0.58f, 1.35f);
++            distance = (radius * 1.65f * aspectAdjustment / std::tan(fov * 0.5f)) /
++                       effectiveZoom * camera.distanceScale;
++            basis = CameraBasisFromObjectOrientation(objectOrientation);
++        }
++        else
++        {
++            const auto yaw = camera.yawDegrees * std::numbers::pi_v<float> / 180.0f;
++            const auto pitch = camera.pitchDegrees * std::numbers::pi_v<float> / 180.0f;
++            basis = OrientToModel(BuildCameraBasis(yaw, pitch), extent);
++        }
+         const auto lighting = BuildLightingRig(
+             camera.lightingPreset, camera.exposureStops, basis);
+         const auto modelCenter = ApplyNormalizedPan(
+@@ -1123,6 +1330,16 @@ namespace Meridian::Render::NifPreview
              context->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
              context->IASetIndexBuffer(m_indexBuffer.Get(), DXGI_FORMAT_R32_UINT, 0);
              context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -652,7 +1083,7 @@ index aae405a..e8b9515 100644
              for (const auto& draw : m_draws)
              {
                  const auto visibility = m_sceneVisibility.find(draw.sceneObject);
-@@ -1130,31 +1229,106 @@ namespace Meridian::Render::NifPreview
+@@ -1130,31 +1347,106 @@ namespace Meridian::Render::NifPreview
                  {
                      continue;
                  }
@@ -773,7 +1204,7 @@ index aae405a..e8b9515 100644
                      draw.material.alphaThreshold,
                  };
                  materialConstants.tintColor = {
-@@ -1163,6 +1337,24 @@ namespace Meridian::Render::NifPreview
+@@ -1163,6 +1455,24 @@ namespace Meridian::Render::NifPreview
                      draw.material.tintColor.z,
                      1.0f,
                  };
@@ -798,7 +1229,7 @@ index aae405a..e8b9515 100644
                  if (draw.material.tangentSpaceNormal && draw.normalTexture != nullptr)
                  {
                      materialConstants.materialFlags |= MATERIAL_NORMAL_MAP;
-@@ -1192,6 +1384,14 @@ namespace Meridian::Render::NifPreview
+@@ -1192,6 +1502,14 @@ namespace Meridian::Render::NifPreview
                  {
                      materialConstants.materialFlags |= MATERIAL_ENVIRONMENT_MAP;
                  }
@@ -813,7 +1244,7 @@ index aae405a..e8b9515 100644
                  if (draw.material.alphaTest)
                  {
                      materialConstants.materialFlags |= MATERIAL_ALPHA_TEST;
-@@ -1200,9 +1400,50 @@ namespace Meridian::Render::NifPreview
+@@ -1200,9 +1518,50 @@ namespace Meridian::Render::NifPreview
                  {
                      materialConstants.materialFlags |= MATERIAL_TEXTURE_ALPHA;
                  }
@@ -865,7 +1296,7 @@ index aae405a..e8b9515 100644
                  {
                      materialConstants.materialFlags |= MATERIAL_PREMULTIPLIED_ALPHA;
                  }
-@@ -1217,13 +1458,15 @@ namespace Meridian::Render::NifPreview
+@@ -1217,13 +1576,15 @@ namespace Meridian::Render::NifPreview
                      draw.environmentMaskTexture != nullptr ? draw.environmentMaskTexture.Get() : m_fallbackWhiteTexture.Get(),
                      draw.faceTintTexture != nullptr ? draw.faceTintTexture.Get() : m_fallbackWhiteTexture.Get(),
                      draw.faceDetailTexture != nullptr ? draw.faceDetailTexture.Get() : m_fallbackWhiteTexture.Get(),
@@ -882,19 +1313,34 @@ index aae405a..e8b9515 100644
              context->PSSetShaderResources(0, static_cast<UINT>(std::size(nullTextures)), nullTextures);
  
              // The source must no longer be bound for output when the transport
-@@ -1251,6 +1494,7 @@ namespace Meridian::Render::NifPreview
+@@ -1251,6 +1612,15 @@ namespace Meridian::Render::NifPreview
          m_sceneVisibility.clear();
          m_textureCache.clear();
          m_bounds = {};
 +        m_hasAnimatedMaterials = false;
++        {
++            std::lock_guard lock(m_cameraMutex);
++            m_useInventoryCamera = false;
++            m_inventoryMarker = {};
++            m_hasApiCameraBaseline = false;
++            m_pointerDragActive = false;
++            m_suppressApiAnglesUntil = {};
++        }
          m_cameraDirty.store(false, std::memory_order_release);
      }
  }
 diff --git a/src/UIPlatform/Render/NifPreviewRenderer.h b/src/UIPlatform/Render/NifPreviewRenderer.h
-index ed08c1c..6d914d3 100644
+index ed08c1c..425fadf 100644
 --- a/src/UIPlatform/Render/NifPreviewRenderer.h
 +++ b/src/UIPlatform/Render/NifPreviewRenderer.h
-@@ -10,6 +10,7 @@
+@@ -4,12 +4,14 @@
+ #include "MeridianUIAPI/NifSceneAPI.h"
+ #include "MeridianUIAPI/NifViewAPI.h"
+ #include "Render/FrameTransport.h"
++#include "Render/NifCameraMath.h"
+ #include "Render/NifMaterialTint.h"
+ #include "Render/NifPreviewMesh.h"
+ #include "Render/NifTextureOverride.h"
  #include "Render/RenderData.h"
  
  #include <atomic>
@@ -902,7 +1348,24 @@ index ed08c1c..6d914d3 100644
  #include <cstdint>
  #include <memory>
  #include <mutex>
-@@ -99,6 +100,7 @@ namespace Meridian::Render::NifPreview
+@@ -70,6 +72,8 @@ namespace Meridian::Render::NifPreview
+         bool SetObjectVisible(Meridian::UI::NifScene::ObjectHandle a_object,
+                               bool a_visible);
+         bool FrameModel();
++        void SetPointerDragActive(bool a_active);
++        void RotateByScreenDelta(float a_deltaXRadians, float a_deltaYRadians);
+ 
+         void Prepare(RenderData& a_renderData, std::uint32_t a_width, std::uint32_t a_height);
+         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> GetSurfaceView();
+@@ -83,6 +87,7 @@ namespace Meridian::Render::NifPreview
+             std::uint64_t generation = 0;
+             std::vector<SceneSubmissionObject> scenes;
+             bool frameOnLoad = true;
++            bool useInventoryCamera = false;
+         };
+ 
+         struct LoadedDrawRange
+@@ -99,6 +104,7 @@ namespace Meridian::Render::NifPreview
              Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> environmentMaskTexture;
              Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> faceTintTexture;
              Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> faceDetailTexture;
@@ -910,7 +1373,7 @@ index ed08c1c..6d914d3 100644
          };
  
          bool InitializeGraphics(RenderData& a_renderData,
-@@ -109,7 +111,8 @@ namespace Meridian::Render::NifPreview
+@@ -109,7 +115,8 @@ namespace Meridian::Render::NifPreview
              ID3D11Device* a_device,
              std::string_view a_path,
              bool a_srgb,
@@ -920,7 +1383,21 @@ index ed08c1c..6d914d3 100644
          bool EnsureTargets(ID3D11Device* a_device, std::uint32_t a_width, std::uint32_t a_height);
          bool RenderFrame(std::uint32_t a_width, std::uint32_t a_height);
          void ResetModelResources();
-@@ -132,6 +135,10 @@ namespace Meridian::Render::NifPreview
+@@ -126,12 +133,24 @@ namespace Meridian::Render::NifPreview
+ 
+         mutable std::mutex m_cameraMutex;
+         Meridian::UI::NifView::CameraState m_camera{};
++        bool m_useInventoryCamera = false;
++        PreviewInventoryMarker m_inventoryMarker{};
++        Quaternion m_objectOrientation{};
++        bool m_hasApiCameraBaseline = false;
++        float m_lastApiYawDegrees = 0.0f;
++        float m_lastApiPitchDegrees = 0.0f;
++        bool m_pointerDragActive = false;
++        std::chrono::steady_clock::time_point m_suppressApiAnglesUntil{};
+         std::atomic_bool m_cameraDirty{false};
+ 
+         PreviewBounds m_bounds{};
          std::uint32_t m_indexCount = 0;
          std::uint32_t m_targetWidth = 0;
          std::uint32_t m_targetHeight = 0;
@@ -931,7 +1408,7 @@ index ed08c1c..6d914d3 100644
  
          std::shared_ptr<RenderDevice> m_platformDevice;
          FrameTransport m_transport;
-@@ -146,7 +153,9 @@ namespace Meridian::Render::NifPreview
+@@ -146,7 +165,9 @@ namespace Meridian::Render::NifPreview
          Microsoft::WRL::ComPtr<ID3D11Buffer> m_vertexBuffer;
          Microsoft::WRL::ComPtr<ID3D11Buffer> m_indexBuffer;
          Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_fallbackWhiteTexture;
@@ -941,6 +1418,21 @@ index ed08c1c..6d914d3 100644
          std::vector<LoadedDrawRange> m_draws;
          std::unordered_map<Meridian::UI::NifScene::ObjectHandle, bool> m_sceneVisibility;
          std::unordered_map<std::string, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>>
+diff --git a/src/UIPlatform/Render/NifSceneComposition.h b/src/UIPlatform/Render/NifSceneComposition.h
+index 64c0120..e69f0d8 100644
+--- a/src/UIPlatform/Render/NifSceneComposition.h
++++ b/src/UIPlatform/Render/NifSceneComposition.h
+@@ -167,6 +167,10 @@ namespace Meridian::Render::NifPreview
+                 result.mesh.draws.push_back(std::move(draw));
+             }
+             result.mesh.bounds.Include(input.mesh.bounds);
++            if (!result.mesh.inventoryMarker.present && input.mesh.inventoryMarker.present)
++            {
++                result.mesh.inventoryMarker = input.mesh.inventoryMarker;
++            }
+             const auto [metadata, inserted] =
+                 objectMetadata.try_emplace(input.object, result.objects.size());
+             if (inserted)
 diff --git a/src/UIPlatform/Render/NifWeightInterpolation.h b/src/UIPlatform/Render/NifWeightInterpolation.h
 index efb2231..81354d1 100644
 --- a/src/UIPlatform/Render/NifWeightInterpolation.h
@@ -1382,7 +1874,7 @@ index 28e1103..65eae33 100644
 +    return float4(color, 1.0f);
  }
 diff --git a/src/UIPlatform/Render/SkyrimNifExtractor.cpp b/src/UIPlatform/Render/SkyrimNifExtractor.cpp
-index f679bd6..fefa0b7 100644
+index f679bd6..ec3662c 100644
 --- a/src/UIPlatform/Render/SkyrimNifExtractor.cpp
 +++ b/src/UIPlatform/Render/SkyrimNifExtractor.cpp
 @@ -6,6 +6,7 @@
@@ -1986,6 +2478,201 @@ index f679bd6..fefa0b7 100644
  
              const auto transform = a_transforms.find(a_object);
              if (transform == a_transforms.end())
+@@ -908,6 +1344,48 @@ namespace Meridian::Render::NifPreview
+                 }
+             }
+         }
++        PreviewInventoryMarker ExtractInventoryMarker(RE::NiAVObject* a_root)
++        {
++            PreviewInventoryMarker marker{};
++            if (a_root == nullptr)
++            {
++                return marker;
++            }
++
++            const RE::BSInvMarker* inv = a_root->GetExtraData<RE::BSInvMarker>("INV");
++            if (inv == nullptr && a_root->extra != nullptr)
++            {
++                for (std::uint16_t i = 0; i < a_root->extraDataSize; ++i)
++                {
++                    auto* extra = a_root->extra[i];
++                    if (extra == nullptr)
++                    {
++                        continue;
++                    }
++                    const auto* rtti = extra->GetRTTI();
++                    if (rtti != nullptr && rtti->GetName() != nullptr &&
++                        std::string_view(rtti->GetName()) == "BSInvMarker")
++                    {
++                        inv = static_cast<const RE::BSInvMarker*>(extra);
++                        break;
++                    }
++                }
++            }
++            if (inv == nullptr)
++            {
++                return marker;
++            }
++
++            constexpr float kMilliradiansToRadians = 0.001f;
++            marker.present = true;
++            marker.rotationRadians = {
++                static_cast<float>(inv->rotationX) * kMilliradiansToRadians,
++                static_cast<float>(inv->rotationY) * kMilliradiansToRadians,
++                static_cast<float>(inv->rotationZ) * kMilliradiansToRadians,
++            };
++            marker.zoom = (std::isfinite(inv->zoom) && inv->zoom > 0.01f) ? inv->zoom : 1.0f;
++            return marker;
++        }
+     }
+ 
+     ExtractionResult ExtractModelMesh(RE::NiNode* a_root,
+@@ -923,6 +1401,8 @@ namespace Meridian::Render::NifPreview
+             return result;
+         }
+ 
++        const PreviewInventoryMarker invMarker = ExtractInventoryMarker(a_root);
++
+         ObjectTransformMap transforms;
+         transforms.reserve(1'024);
+         if (!CollectObjectTransforms(a_root, AffineTransform{}, transforms, 0))
+@@ -965,6 +1445,7 @@ namespace Meridian::Render::NifPreview
+                 shapeIndex,
+                 visited);
+         }
++        result.mesh.inventoryMarker = invMarker;
+         if (!result.mesh.Empty())
+         {
+             result.status = ExtractionStatus::Success;
+diff --git a/src/UIPlatform/Services/InputRouter.cpp b/src/UIPlatform/Services/InputRouter.cpp
+index fb6bba5..dabd7ba 100644
+--- a/src/UIPlatform/Services/InputRouter.cpp
++++ b/src/UIPlatform/Services/InputRouter.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include "Common/InputSinkPriority.h"
+ #include "Menus/FocusArbiter.h"
++#include "Menus/NativeSurfaceMenu.h"
+ #include "Render/RenderHost.h"
+ #include "Services/InputLangSwitchService.h"
+ #include "Services/ControllerInputService.h"
+@@ -107,6 +108,18 @@ namespace Meridian::Services
+                     consumed.insert(event);
+                     continue;
+                 }
++                if (button != nullptr &&
++                    event->GetDevice() == RE::INPUT_DEVICE::kMouse &&
++                    button->GetIDCode() == RE::BSWin32MouseDevice::Key::kLeftButton)
++                {
++                    for (auto it = menus.rbegin(); it != menus.rend(); ++it)
++                    {
++                        if ((*it)->GetMenuType() == Menus::SubMenuType::NativeSurface)
++                        {
++                            static_cast<Menus::NativeSurfaceMenu*>(it->get())->ObserveMouseButton(button);
++                        }
++                    }
++                }
+                 for (auto it = menus.rbegin(); it != menus.rend(); ++it)
+                     if ((*it)->ProcessButton(button))
+                     {
+@@ -120,8 +133,16 @@ namespace Meridian::Services
+             }
+             else if (event->GetEventType() == RE::INPUT_EVENT_TYPE::kMouseMove)
+             {
++                auto* mouseMove = event->AsMouseMoveEvent();
++                for (auto it = menus.rbegin(); it != menus.rend(); ++it)
++                {
++                    if ((*it)->GetMenuType() == Menus::SubMenuType::NativeSurface)
++                    {
++                        static_cast<Menus::NativeSurfaceMenu*>(it->get())->ObserveMouseMove(mouseMove);
++                    }
++                }
+                 for (auto it = menus.rbegin(); it != menus.rend(); ++it)
+-                    if ((*it)->ProcessMouseMove(event->AsMouseMoveEvent()))
++                    if ((*it)->ProcessMouseMove(mouseMove))
+                     {
+                         handled = true;
+                         break;
+diff --git a/tests/UIPlatform/NifCameraMathTests.cpp b/tests/UIPlatform/NifCameraMathTests.cpp
+index effc21e..aa1da3e 100644
+--- a/tests/UIPlatform/NifCameraMathTests.cpp
++++ b/tests/UIPlatform/NifCameraMathTests.cpp
+@@ -60,6 +60,75 @@ int main()
+     Expect(Near(panned.y, 24.0f), "horizontal pan scales by model radius");
+     Expect(Near(panned.z, 28.0f), "vertical pan scales by model radius");
+ 
++    // BSInvMarker: armadura deitada (+90 deg em X) deve apresentar a face +Z (peitoral)
++    // voltada para a camera (-Y) e o eixo +Y (gola) para cima (+Z na tela).
++    constexpr float kHalfPi = std::numbers::pi_v<float> * 0.5f;
++    const auto cuirassQ = BuildInvMarkerQuaternion({kHalfPi, 0.0f, 0.0f});
++    const auto cuirassChest = RotateVector(cuirassQ, {0.0f, 0.0f, 1.0f});
++    const auto cuirassCollar = RotateVector(cuirassQ, {0.0f, 1.0f, 0.0f});
++    Expect(Near(cuirassChest.x, 0.0f) && Near(cuirassChest.y, -1.0f) && Near(cuirassChest.z, 0.0f),
++           "BSInvMarker 90 deg X faces armor chest (+Z) toward camera (-Y)");
++    Expect(Near(cuirassCollar.x, 0.0f) && Near(cuirassCollar.y, 0.0f) && Near(cuirassCollar.z, 1.0f),
++           "BSInvMarker 90 deg X points armor collar (+Y) straight up (+Z)");
++
++    const auto cuirassBasis = CameraBasisFromObjectOrientation(cuirassQ);
++    Expect(Near(cuirassBasis.eyeDirection.x, 0.0f) && Near(cuirassBasis.eyeDirection.y, 0.0f) &&
++               Near(cuirassBasis.eyeDirection.z, 1.0f),
++           "CameraBasisFromObjectOrientation places eye on +Z for 90 deg X cuirass");
++    Expect(Near(cuirassBasis.up.x, 0.0f) && Near(cuirassBasis.up.y, 1.0f) &&
++               Near(cuirassBasis.up.z, 0.0f),
++           "CameraBasisFromObjectOrientation aligns screen up with +Y for 90 deg X cuirass");
++
++    // BSInvMarker: tigela/ingrediente (45 deg X) mantem base ortonormal.
++    const auto bowlBasis = CameraBasisFromObjectOrientation(
++        BuildInvMarkerQuaternion({kHalfPi * 0.5f, 0.0f, 0.0f}));
++    Expect(Near(Dot(bowlBasis.eyeDirection, bowlBasis.right), 0.0f) &&
++               Near(Dot(bowlBasis.eyeDirection, bowlBasis.up), 0.0f) &&
++               Near(Dot(bowlBasis.right, bowlBasis.up), 0.0f),
++           "BSInvMarker 45 deg X produces orthonormal camera basis");
++
++    // Trackball 360 graus livre (sem trava em +-75 deg e sem gimbal lock):
++    // +dx puxa a frente (-Y) para a direita (+X); +dy puxa a frente (-Y) para baixo (-Z).
++    const Quaternion identityQ{};
++    const auto yawRightQ = ApplyScreenTrackballDelta(identityQ, kHalfPi, 0.0f);
++    const auto frontAfterRight = RotateVector(yawRightQ, {0.0f, -1.0f, 0.0f});
++    Expect(Near(frontAfterRight.x, 1.0f) && Near(frontAfterRight.y, 0.0f) &&
++               Near(frontAfterRight.z, 0.0f),
++           "positive horizontal drag turns object front (-Y) to screen right (+X)");
++
++    const auto pitchDownQ = ApplyScreenTrackballDelta(identityQ, 0.0f, kHalfPi);
++    const auto frontAfterDown = RotateVector(pitchDownQ, {0.0f, -1.0f, 0.0f});
++    const auto topAfterDown = RotateVector(pitchDownQ, {0.0f, 0.0f, 1.0f});
++    Expect(Near(frontAfterDown.x, 0.0f) && Near(frontAfterDown.y, 0.0f) &&
++               Near(frontAfterDown.z, -1.0f),
++           "positive vertical drag tilts object front (-Y) downward (-Z)");
++    Expect(Near(topAfterDown.x, 0.0f) && Near(topAfterDown.y, -1.0f) &&
++               Near(topAfterDown.z, 0.0f),
++           "positive vertical drag brings object top (+Z) toward camera (-Y)");
++
++    // 4 passos de 90 deg verticais (90 -> 180 de cabeca para baixo -> 270 -> 360)
++    // devem girar livremente 360 graus e retornar ao ponto inicial.
++    Quaternion spinQ = identityQ;
++    for (int step = 0; step < 4; ++step)
++    {
++        spinQ = ApplyScreenTrackballDelta(spinQ, 0.0f, kHalfPi);
++        const auto basis = CameraBasisFromObjectOrientation(spinQ);
++        Expect(Near(Dot(basis.eyeDirection, basis.right), 0.0f) &&
++                   Near(Dot(basis.eyeDirection, basis.up), 0.0f) &&
++                   Near(Dot(basis.right, basis.up), 0.0f),
++               "trackball basis stays orthonormal across full 360 vertical flip");
++        if (step == 1)
++        {
++            const auto invertedTop = RotateVector(spinQ, {0.0f, 0.0f, 1.0f});
++            Expect(Near(invertedTop.z, -1.0f),
++                   "180 deg vertical drag flips object completely upside down without pitch clamp");
++        }
++    }
++    const auto restoredTop = RotateVector(spinQ, {0.0f, 0.0f, 1.0f});
++    const auto restoredFront = RotateVector(spinQ, {0.0f, -1.0f, 0.0f});
++    Expect(Near(restoredTop.z, 1.0f) && Near(restoredFront.y, -1.0f),
++           "360 deg vertical trackball rotation returns smoothly to start orientation");
++
+     if (g_failures != 0)
+     {
+         std::cerr << g_failures << " NIF camera math test(s) failed\n";
 diff --git a/tests/UIPlatform/NifPreviewGpuTests.cpp b/tests/UIPlatform/NifPreviewGpuTests.cpp
 index a569fcf..4056fab 100644
 --- a/tests/UIPlatform/NifPreviewGpuTests.cpp

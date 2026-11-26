@@ -1,7 +1,7 @@
 ﻿{
     "name":  "AETHERIUS - CORREÇÃO INVENTARIO",
-    "version":  "1.3.1",
-    "builtAt":  "2026-11-26T00:32:05-03:00",
+    "version":  "1.4.0",
+    "builtAt":  "2026-11-26T03:25:00-03:00",
     "upstreamBase":  "heathbrownkeyworks/MeridianUI@5707877322c85a1bd1c2e3309487f266d0647ca9",
     "aetheriusBasePatch":  "client/ui-core/meridian/changes.patch",
     "toolchain":  "MSVC 14.44.35207 (VS 2022 Build Tools), Windows SDK 10.0.26100.0 (fxc.exe), CEF 152.0.6, CRT /MT",
@@ -13,20 +13,20 @@
                         "PackedGeometryDecoderTests",
                         "NifTexturePathTests",
                         "NifPreviewRendererArchitectureTests",
-                        "NifCameraMathTests",
+                        "NifCameraMathTests (incl. BSInvMarker + Trackball 360)",
                         "NifSceneCompositionTests",
                         "NifWeightInterpolationTests"
                     ],
     "artifacts":  [
                       {
                           "path":  "MeridianUI/MeridianUI.dll",
-                          "bytes":  2439680,
-                          "sha256":  "bcf8da13d9cc43543edca1c0c9ebc32d7f1527f9036b3019a269851607fe10c1"
+                          "bytes":  2453504,
+                          "sha256":  "2a33491792d6b50712600feb73ee17c5172d7aa9b832b86d7c7822180fc8d168"
                       },
                       {
                           "path":  "patch/meridian-inventory-preview-fix.patch",
-                          "bytes":  101209,
-                          "sha256":  "c8ad582df9903a1e9778159d21b30d33b10d4cc92333d038649fddbcf6e9074e"
+                          "bytes":  132127,
+                          "sha256":  "418b16e86f3ca36526877710a41b11cd800602d2c6c84ed674637070ccd7e9ef"
                       }
                   ]
 }

@@ -53,6 +53,9 @@ namespace Meridian::Menus
                                  bool a_visible);
         bool FrameNif();
 
+        void ObserveMouseButton(RE::ButtonEvent* a_button);
+        void ObserveMouseMove(RE::MouseMoveEvent* a_event);
+
     private:
         std::shared_ptr<LayerGeometryHolder> m_geometryHolder;
         mutable std::mutex m_resourceMutex;
@@ -62,5 +65,7 @@ namespace Meridian::Menus
         Meridian::Render::NifPreview::NifPreviewRenderer m_nifPreviewRenderer;
         std::atomic_bool m_ready{false};
         std::atomic<std::int64_t> m_hiddenSinceMs{0};
+        std::atomic_bool m_pointerPressed{false};
+        std::atomic_bool m_dragActivated{false};
     };
 }

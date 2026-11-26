@@ -321,12 +321,20 @@ namespace Meridian::Render::NifPreview
         }
     };
 
+    struct PreviewInventoryMarker
+    {
+        bool present = false;
+        Float3 rotationRadians{};
+        float zoom = 1.0f;
+    };
+
     struct PreviewMesh
     {
         std::vector<PreviewVertex> vertices;
         std::vector<std::uint32_t> indices;
         std::vector<PreviewDrawRange> draws;
         PreviewBounds bounds{};
+        PreviewInventoryMarker inventoryMarker{};
 
         bool Empty() const
         {

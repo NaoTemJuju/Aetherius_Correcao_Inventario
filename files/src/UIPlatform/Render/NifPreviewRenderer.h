@@ -4,6 +4,7 @@
 #include "MeridianUIAPI/NifSceneAPI.h"
 #include "MeridianUIAPI/NifViewAPI.h"
 #include "Render/FrameTransport.h"
+#include "Render/NifCameraMath.h"
 #include "Render/NifMaterialTint.h"
 #include "Render/NifPreviewMesh.h"
 #include "Render/NifTextureOverride.h"
@@ -71,6 +72,8 @@ namespace Meridian::Render::NifPreview
         bool SetObjectVisible(Meridian::UI::NifScene::ObjectHandle a_object,
                               bool a_visible);
         bool FrameModel();
+        void SetPointerDragActive(bool a_active);
+        void RotateByScreenDelta(float a_deltaXRadians, float a_deltaYRadians);
 
         void Prepare(RenderData& a_renderData, std::uint32_t a_width, std::uint32_t a_height);
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> GetSurfaceView();
@@ -84,6 +87,7 @@ namespace Meridian::Render::NifPreview
             std::uint64_t generation = 0;
             std::vector<SceneSubmissionObject> scenes;
             bool frameOnLoad = true;
+            bool useInventoryCamera = false;
         };
 
         struct LoadedDrawRange
@@ -129,6 +133,14 @@ namespace Meridian::Render::NifPreview
 
         mutable std::mutex m_cameraMutex;
         Meridian::UI::NifView::CameraState m_camera{};
+        bool m_useInventoryCamera = false;
+        PreviewInventoryMarker m_inventoryMarker{};
+        Quaternion m_objectOrientation{};
+        bool m_hasApiCameraBaseline = false;
+        float m_lastApiYawDegrees = 0.0f;
+        float m_lastApiPitchDegrees = 0.0f;
+        bool m_pointerDragActive = false;
+        std::chrono::steady_clock::time_point m_suppressApiAnglesUntil{};
         std::atomic_bool m_cameraDirty{false};
 
         PreviewBounds m_bounds{};
