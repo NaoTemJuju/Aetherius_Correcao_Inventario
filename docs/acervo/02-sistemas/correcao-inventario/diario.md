@@ -118,5 +118,20 @@ Registro cronológico da investigação, implementação e validação da corre�
   - Artefatos v1.4.0:
     - `MeridianUI/MeridianUI.dll`: `2.453.504` bytes, SHA-256 `2a33491792d6b50712600feb73ee17c5172d7aa9b832b86d7c7822180fc8d168`.
     - `patch/meridian-inventory-preview-fix.patch`: `132.127` bytes, SHA-256 `418b16e86f3ca36526877710a41b11cd800602d2c6c84ed674637070ccd7e9ef`.
+
+## 2026-11-26 — v1.4.1: Correção da convenção NetImmerse (`RE::NiMatrix3::SetEulerAnglesXYZ`) e câmera `+Y` do `Inventory3DManager`
+- **Diagnóstico empírico (11 prints reais da v1.4.0 + inspeção de `NiMatrix3.cpp` na CommonLibSSE-NG e dos NIFs nos BSAs do Skyrim):**
+  - Na v1.4.0, itens com `BSInvMarker` em `90° X` ou `270° X` (Tocha, Armadura de Aço, Armadura Daédrica, Septim, Coração Humano, Coração de Daedra, Asa de Borboleta) apareceram de ponta cabeça e o Elmo Daédrico (`12.4° X`) apareceu de costas.
+  - A inspeção direta de `RE::NiMatrix3::SetEulerAnglesXYZ` (`NiMatrix3.cpp:105-172`) provou que o NetImmerse/Skyrim usa rotação *clockwise*/transposta (`MakeX/Y/ZRotation(a)` equivale a `-a` em convenção right-handed, logo `SetEulerAnglesXYZ(x,y,z) = Rx_RH(-x) * Ry_RH(-y) * Rz_RH(-z)`), e a câmera do `Inventory3DManager` fica em `+Y` olhando para `-Y` (`right = -X`, `up = +Z`).
+  - Na v1.4.0, sinais positivos + câmera em `-Y` cancelavam o eixo da frente no peitoral, mas invertiam cima/baixo em 180° e mostravam elmos de costas.
+- **Feito:**
+  - `NifCameraMath.h`: corrigidos `BuildInvMarkerQuaternion` (`Rx_RH(-x) * Ry_RH(-y) * Rz_RH(-z)`, bit-a-bit idêntico a `RE::NiMatrix3::SetEulerAnglesXYZ`), `CameraBasisFromObjectOrientation` (`eye=+Y, right=-X, up=+Z` preservando base right-handed `cross(up, eye) == right`) e `ApplyScreenTrackballDelta` (eixo horizontal `+Z` com `+dx` e eixo vertical `-X` com `+dy`, mantendo o sentido exato do Skyrim vanilla).
+  - `NifCameraMathTests.cpp`: adicionada validação direta contra a matriz analítica de `RE::NiMatrix3::SetEulerAnglesXYZ` em 3 eixos (`lavender01.nif`) + casos de Armadura (`90° X`), Tocha/Adaga (`270° X`), Septim (`90° X, 180° Z`), verificação right-handed e giro 360°.
+- **Testes:**
+  - Build Release limpo (0 erros, 0 warnings em `/W4`); ABI idêntica via `dumpbin`.
+  - CTest: **9/9 aprovados** (`0.95s`); GPU física real aprovada (`DXVK=0 debugQueue=1`).
+  - Artefatos v1.4.1:
+    - `MeridianUI/MeridianUI.dll`: `2.453.504` bytes, SHA-256 `477ae7df2f75eb82516cb2490ec5a8498e51f496d78174b7d2bdafc0e5a6543f`.
+    - `patch/meridian-inventory-preview-fix.patch`: `134.383` bytes, SHA-256 `dabada3841717de06b11a01e183fecdd1450fe890465d35b45ba1d6146709cea`.
 - **Bloqueios:** nenhum.
 - **Nota sobre Acervo Aetherius:** este ambiente não realizou push direto no repositório `pablo-rodrigues1/AETHERIUS-ACERVO-DE-INFORMACOES`; os arquivos `.md` prontos para publicação estão em `docs/acervo/` e o resumo de tabelas em `docs/ATUALIZACOES-ACERVO.md`.

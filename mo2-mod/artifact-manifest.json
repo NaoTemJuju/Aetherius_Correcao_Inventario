@@ -1,7 +1,7 @@
 ﻿{
     "name":  "AETHERIUS - CORREÇÃO INVENTARIO",
-    "version":  "1.4.0",
-    "builtAt":  "2026-11-26T03:25:00-03:00",
+    "version":  "1.4.1",
+    "builtAt":  "2026-11-26T22:04:00-03:00",
     "upstreamBase":  "heathbrownkeyworks/MeridianUI@5707877322c85a1bd1c2e3309487f266d0647ca9",
     "aetheriusBasePatch":  "client/ui-core/meridian/changes.patch",
     "toolchain":  "MSVC 14.44.35207 (VS 2022 Build Tools), Windows SDK 10.0.26100.0 (fxc.exe), CEF 152.0.6, CRT /MT",
@@ -21,12 +21,12 @@
                       {
                           "path":  "MeridianUI/MeridianUI.dll",
                           "bytes":  2453504,
-                          "sha256":  "2a33491792d6b50712600feb73ee17c5172d7aa9b832b86d7c7822180fc8d168"
+                          "sha256":  "477ae7df2f75eb82516cb2490ec5a8498e51f496d78174b7d2bdafc0e5a6543f"
                       },
                       {
                           "path":  "patch/meridian-inventory-preview-fix.patch",
-                          "bytes":  132127,
-                          "sha256":  "418b16e86f3ca36526877710a41b11cd800602d2c6c84ed674637070ccd7e9ef"
+                          "bytes":  134383,
+                          "sha256":  "dabada3841717de06b11a01e183fecdd1450fe890465d35b45ba1d6146709cea"
                       }
                   ]
 }

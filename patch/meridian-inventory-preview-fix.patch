@@ -245,10 +245,10 @@ index a20065f..546d446 100644
      };
  }
 diff --git a/src/UIPlatform/Render/NifCameraMath.h b/src/UIPlatform/Render/NifCameraMath.h
-index f5c45de..4e4e781 100644
+index f5c45de..f602978 100644
 --- a/src/UIPlatform/Render/NifCameraMath.h
 +++ b/src/UIPlatform/Render/NifCameraMath.h
-@@ -60,6 +60,106 @@ namespace Meridian::Render::NifPreview
+@@ -60,6 +60,109 @@ namespace Meridian::Render::NifPreview
          return {map(a_basis.eyeDirection), map(a_basis.right), map(a_basis.up)};
      }
  
@@ -308,46 +308,49 @@ index f5c45de..4e4e781 100644
 +        };
 +    }
 +
-+    // Aetherius: reproduz exatamente RE::NiMatrix3::SetEulerAnglesXYZ (R = Rx * Ry * Rz)
++    // Aetherius: reproduz exatamente RE::NiMatrix3::SetEulerAnglesXYZ(x, y, z)
 +    // usado pelo BSInvMarker do Inventory3DManager do Skyrim SE.
++    // Em NetImmerse/Skyrim (NiMatrix3.cpp:105-172), MakeX/Y/ZRotation aplicam
++    // rotacoes clockwise/transpostas: SetEulerAnglesXYZ(x,y,z) = Rx_RH(-x) * Ry_RH(-y) * Rz_RH(-z).
 +    inline Quaternion BuildInvMarkerQuaternion(const Float3& a_eulerXYZRadians)
 +    {
-+        const auto qx = QuaternionFromAxisAngle({1.0f, 0.0f, 0.0f}, a_eulerXYZRadians.x);
-+        const auto qy = QuaternionFromAxisAngle({0.0f, 1.0f, 0.0f}, a_eulerXYZRadians.y);
-+        const auto qz = QuaternionFromAxisAngle({0.0f, 0.0f, 1.0f}, a_eulerXYZRadians.z);
++        const auto qx = QuaternionFromAxisAngle({1.0f, 0.0f, 0.0f}, -a_eulerXYZRadians.x);
++        const auto qy = QuaternionFromAxisAngle({0.0f, 1.0f, 0.0f}, -a_eulerXYZRadians.y);
++        const auto qz = QuaternionFromAxisAngle({0.0f, 0.0f, 1.0f}, -a_eulerXYZRadians.z);
 +        return NormalizeQuaternion(MultiplyQuaternion(MultiplyQuaternion(qx, qy), qz));
 +    }
 +
 +    // Orientacao natural para itens de mods sem BSInvMarker: mantem +Z para cima
-+    // com leve inclinacao estetica (12 deg em X, -15 deg em Z), sem tombar o modelo.
++    // com leve inclinacao estetica (12 deg em X, 15 deg em Z), sem tombar o modelo.
 +    inline Quaternion BuildDefaultInventoryQuaternion()
 +    {
 +        constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
-+        return BuildInvMarkerQuaternion({12.0f * kDegToRad, 0.0f, -15.0f * kDegToRad});
++        return BuildInvMarkerQuaternion({12.0f * kDegToRad, 0.0f, 15.0f * kDegToRad});
 +    }
 +
-+    // Rotacao livre 360 graus em espaco de tela (mesmo sentido do Skyrim vanilla):
-+    // +deltaX (mouse para direita) gira a frente do item para a direita (+Z_screen);
-+    // +deltaY (mouse para baixo) puxa o topo do item para frente/baixo (+X_screen).
++    // Rotacao livre 360 graus em espaco de tela (mesmo sentido do Skyrim vanilla,
++    // com camera em +Y olhando -Y, direita = -X, cima = +Z):
++    // +deltaX (mouse para direita) gira a frente (+Y) para a direita (-X) via Rz(+deltaX);
++    // +deltaY (mouse para baixo) gira a frente (+Y) para baixo (-Z) e o topo (+Z) para +Y via Rx(-deltaY).
 +    inline Quaternion ApplyScreenTrackballDelta(const Quaternion& a_current,
 +                                                float a_deltaXRadians,
 +                                                float a_deltaYRadians)
 +    {
 +        const auto qYaw = QuaternionFromAxisAngle({0.0f, 0.0f, 1.0f}, a_deltaXRadians);
-+        const auto qPitch = QuaternionFromAxisAngle({1.0f, 0.0f, 0.0f}, a_deltaYRadians);
++        const auto qPitch = QuaternionFromAxisAngle({-1.0f, 0.0f, 0.0f}, a_deltaYRadians);
 +        const auto qDelta = MultiplyQuaternion(qPitch, qYaw);
 +        return NormalizeQuaternion(MultiplyQuaternion(qDelta, a_current));
 +    }
 +
-+    // Converte a orientacao 3D do item no referencial fixo do Inventory3DManager
-+    // (camera em -Y olhando para +Y, +X direita, +Z cima) para a CameraBasis equivalente,
-+    // mantendo as luzes de estudio fixas em relacao a tela.
++    // Converte a orientacao 3D do item no referencial oficial do Inventory3DManager
++    // do Skyrim (camera em +Y olhando para -Y, -X direita, +Z cima) para a CameraBasis
++    // equivalente, mantendo as luzes de estudio fixas em relacao a tela.
 +    inline CameraBasis CameraBasisFromObjectOrientation(const Quaternion& a_objectOrientation)
 +    {
 +        const auto inv = ConjugateQuaternion(NormalizeQuaternion(a_objectOrientation));
 +        return {
-+            .eyeDirection = Normalize(RotateVector(inv, {0.0f, -1.0f, 0.0f})),
-+            .right = Normalize(RotateVector(inv, {1.0f, 0.0f, 0.0f})),
++            .eyeDirection = Normalize(RotateVector(inv, {0.0f, 1.0f, 0.0f})),
++            .right = Normalize(RotateVector(inv, {-1.0f, 0.0f, 0.0f})),
 +            .up = Normalize(RotateVector(inv, {0.0f, 0.0f, 1.0f})),
 +        };
 +    }
@@ -2594,58 +2597,90 @@ index fb6bba5..dabd7ba 100644
                          handled = true;
                          break;
 diff --git a/tests/UIPlatform/NifCameraMathTests.cpp b/tests/UIPlatform/NifCameraMathTests.cpp
-index effc21e..aa1da3e 100644
+index effc21e..aa28b14 100644
 --- a/tests/UIPlatform/NifCameraMathTests.cpp
 +++ b/tests/UIPlatform/NifCameraMathTests.cpp
-@@ -60,6 +60,75 @@ int main()
+@@ -60,6 +60,107 @@ int main()
      Expect(Near(panned.y, 24.0f), "horizontal pan scales by model radius");
      Expect(Near(panned.z, 28.0f), "vertical pan scales by model radius");
  
-+    // BSInvMarker: armadura deitada (+90 deg em X) deve apresentar a face +Z (peitoral)
-+    // voltada para a camera (-Y) e o eixo +Y (gola) para cima (+Z na tela).
++    // BSInvMarker: armadura deitada (+90 deg em X no Skyrim) deve apresentar o peitoral (+Z)
++    // voltado para a camera (+Y) e a gola (-Y) apontando para cima (+Z na tela).
 +    constexpr float kHalfPi = std::numbers::pi_v<float> * 0.5f;
++    constexpr float kPi = std::numbers::pi_v<float>;
 +    const auto cuirassQ = BuildInvMarkerQuaternion({kHalfPi, 0.0f, 0.0f});
 +    const auto cuirassChest = RotateVector(cuirassQ, {0.0f, 0.0f, 1.0f});
-+    const auto cuirassCollar = RotateVector(cuirassQ, {0.0f, 1.0f, 0.0f});
-+    Expect(Near(cuirassChest.x, 0.0f) && Near(cuirassChest.y, -1.0f) && Near(cuirassChest.z, 0.0f),
-+           "BSInvMarker 90 deg X faces armor chest (+Z) toward camera (-Y)");
++    const auto cuirassCollar = RotateVector(cuirassQ, {0.0f, -1.0f, 0.0f});
++    Expect(Near(cuirassChest.x, 0.0f) && Near(cuirassChest.y, 1.0f) && Near(cuirassChest.z, 0.0f),
++           "BSInvMarker 90 deg X faces armor chest (+Z) toward Skyrim inventory camera (+Y)");
 +    Expect(Near(cuirassCollar.x, 0.0f) && Near(cuirassCollar.y, 0.0f) && Near(cuirassCollar.z, 1.0f),
-+           "BSInvMarker 90 deg X points armor collar (+Y) straight up (+Z)");
++           "BSInvMarker 90 deg X points armor collar (-Y) straight up (+Z)");
 +
 +    const auto cuirassBasis = CameraBasisFromObjectOrientation(cuirassQ);
 +    Expect(Near(cuirassBasis.eyeDirection.x, 0.0f) && Near(cuirassBasis.eyeDirection.y, 0.0f) &&
 +               Near(cuirassBasis.eyeDirection.z, 1.0f),
 +           "CameraBasisFromObjectOrientation places eye on +Z for 90 deg X cuirass");
-+    Expect(Near(cuirassBasis.up.x, 0.0f) && Near(cuirassBasis.up.y, 1.0f) &&
++    Expect(Near(cuirassBasis.up.x, 0.0f) && Near(cuirassBasis.up.y, -1.0f) &&
 +               Near(cuirassBasis.up.z, 0.0f),
-+           "CameraBasisFromObjectOrientation aligns screen up with +Y for 90 deg X cuirass");
++           "CameraBasisFromObjectOrientation aligns screen up with -Y (collar) for 90 deg X cuirass");
++    const auto cuirassCross = Cross(cuirassBasis.up, cuirassBasis.eyeDirection);
++    Expect(Near(cuirassCross.x, cuirassBasis.right.x) &&
++               Near(cuirassCross.y, cuirassBasis.right.y) &&
++               Near(cuirassCross.z, cuirassBasis.right.z),
++           "CameraBasisFromObjectOrientation preserves right-handed basis (cross(up, eye) == right)");
 +
-+    // BSInvMarker: tigela/ingrediente (45 deg X) mantem base ortonormal.
-+    const auto bowlBasis = CameraBasisFromObjectOrientation(
-+        BuildInvMarkerQuaternion({kHalfPi * 0.5f, 0.0f, 0.0f}));
-+    Expect(Near(Dot(bowlBasis.eyeDirection, bowlBasis.right), 0.0f) &&
-+               Near(Dot(bowlBasis.eyeDirection, bowlBasis.up), 0.0f) &&
-+               Near(Dot(bowlBasis.right, bowlBasis.up), 0.0f),
-+           "BSInvMarker 45 deg X produces orthonormal camera basis");
++    // BSInvMarker: Tocha / Adaga (+270 deg X) leva a ponta (+Y) para cima (+Z).
++    const auto torchQ = BuildInvMarkerQuaternion({kPi * 1.5f, 0.0f, 0.0f});
++    const auto torchFlame = RotateVector(torchQ, {0.0f, 1.0f, 0.0f});
++    Expect(Near(torchFlame.x, 0.0f) && Near(torchFlame.y, 0.0f) && Near(torchFlame.z, 1.0f),
++           "BSInvMarker 270 deg X points torch flame / dagger tip (+Y) straight up (+Z)");
 +
-+    // Trackball 360 graus livre (sem trava em +-75 deg e sem gimbal lock):
-+    // +dx puxa a frente (-Y) para a direita (+X); +dy puxa a frente (-Y) para baixo (-Z).
++    // BSInvMarker: Septim / Asa de Borboleta (+90 deg X, +180 deg Z) leva face (+Z) para camera (+Y) e topo (+Y) para cima (+Z).
++    const auto coinQ = BuildInvMarkerQuaternion({kHalfPi, 0.0f, kPi});
++    const auto coinFace = RotateVector(coinQ, {0.0f, 0.0f, 1.0f});
++    const auto coinTop = RotateVector(coinQ, {0.0f, 1.0f, 0.0f});
++    Expect(Near(coinFace.y, 1.0f) && Near(coinTop.z, 1.0f),
++           "BSInvMarker (90, 0, 180) faces coin front (+Z -> +Y) right-side up (+Y -> +Z)");
++
++    // Verifica fidelidade exata a RE::NiMatrix3::SetEulerAnglesXYZ(x, y, z) para 3 eixos (Lavanda).
++    {
++        const float rx = 5.035f;
++        const float ry = 5.503f;
++        const float rz = 3.509f;
++        const auto lavQ = BuildInvMarkerQuaternion({rx, ry, rz});
++        const float sx = std::sin(rx), cx = std::cos(rx);
++        const float sy = std::sin(ry), cy = std::cos(ry);
++        const float sz = std::sin(rz), cz = std::cos(rz);
++        const Float3 v{0.3f, -0.7f, 1.1f};
++        const Float3 niRotated{
++            (cy * cz) * v.x + (cy * sz) * v.y + (-sy) * v.z,
++            (sx * sy * cz - cx * sz) * v.x + (sx * sy * sz + cx * cz) * v.y + (sx * cy) * v.z,
++            (cx * sy * cz + sx * sz) * v.x + (cx * sy * sz - sx * cz) * v.y + (cx * cy) * v.z,
++        };
++        const auto qRotated = RotateVector(lavQ, v);
++        Expect(Near(qRotated.x, niRotated.x) && Near(qRotated.y, niRotated.y) &&
++                   Near(qRotated.z, niRotated.z),
++               "BuildInvMarkerQuaternion matches RE::NiMatrix3::SetEulerAnglesXYZ exactly on 3 axes");
++    }
++
++    // Trackball 360 graus livre (camera em +Y, direita = -X, cima = +Z):
++    // +dx puxa a frente (+Y) para a direita (-X); +dy puxa a frente (+Y) para baixo (-Z).
 +    const Quaternion identityQ{};
 +    const auto yawRightQ = ApplyScreenTrackballDelta(identityQ, kHalfPi, 0.0f);
-+    const auto frontAfterRight = RotateVector(yawRightQ, {0.0f, -1.0f, 0.0f});
-+    Expect(Near(frontAfterRight.x, 1.0f) && Near(frontAfterRight.y, 0.0f) &&
++    const auto frontAfterRight = RotateVector(yawRightQ, {0.0f, 1.0f, 0.0f});
++    Expect(Near(frontAfterRight.x, -1.0f) && Near(frontAfterRight.y, 0.0f) &&
 +               Near(frontAfterRight.z, 0.0f),
-+           "positive horizontal drag turns object front (-Y) to screen right (+X)");
++           "positive horizontal drag turns object front (+Y) to screen right (-X)");
 +
 +    const auto pitchDownQ = ApplyScreenTrackballDelta(identityQ, 0.0f, kHalfPi);
-+    const auto frontAfterDown = RotateVector(pitchDownQ, {0.0f, -1.0f, 0.0f});
++    const auto frontAfterDown = RotateVector(pitchDownQ, {0.0f, 1.0f, 0.0f});
 +    const auto topAfterDown = RotateVector(pitchDownQ, {0.0f, 0.0f, 1.0f});
 +    Expect(Near(frontAfterDown.x, 0.0f) && Near(frontAfterDown.y, 0.0f) &&
 +               Near(frontAfterDown.z, -1.0f),
-+           "positive vertical drag tilts object front (-Y) downward (-Z)");
-+    Expect(Near(topAfterDown.x, 0.0f) && Near(topAfterDown.y, -1.0f) &&
++           "positive vertical drag tilts object front (+Y) downward (-Z)");
++    Expect(Near(topAfterDown.x, 0.0f) && Near(topAfterDown.y, 1.0f) &&
 +               Near(topAfterDown.z, 0.0f),
-+           "positive vertical drag brings object top (+Z) toward camera (-Y)");
++           "positive vertical drag brings object top (+Z) toward camera (+Y)");
 +
 +    // 4 passos de 90 deg verticais (90 -> 180 de cabeca para baixo -> 270 -> 360)
 +    // devem girar livremente 360 graus e retornar ao ponto inicial.
@@ -2666,8 +2701,8 @@ index effc21e..aa1da3e 100644
 +        }
 +    }
 +    const auto restoredTop = RotateVector(spinQ, {0.0f, 0.0f, 1.0f});
-+    const auto restoredFront = RotateVector(spinQ, {0.0f, -1.0f, 0.0f});
-+    Expect(Near(restoredTop.z, 1.0f) && Near(restoredFront.y, -1.0f),
++    const auto restoredFront = RotateVector(spinQ, {0.0f, 1.0f, 0.0f});
++    Expect(Near(restoredTop.z, 1.0f) && Near(restoredFront.y, 1.0f),
 +           "360 deg vertical trackball rotation returns smoothly to start orientation");
 +
      if (g_failures != 0)

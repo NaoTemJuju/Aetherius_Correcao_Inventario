@@ -116,46 +116,49 @@ namespace Meridian::Render::NifPreview
         };
     }
 
-    // Aetherius: reproduz exatamente RE::NiMatrix3::SetEulerAnglesXYZ (R = Rx * Ry * Rz)
+    // Aetherius: reproduz exatamente RE::NiMatrix3::SetEulerAnglesXYZ(x, y, z)
     // usado pelo BSInvMarker do Inventory3DManager do Skyrim SE.
+    // Em NetImmerse/Skyrim (NiMatrix3.cpp:105-172), MakeX/Y/ZRotation aplicam
+    // rotacoes clockwise/transpostas: SetEulerAnglesXYZ(x,y,z) = Rx_RH(-x) * Ry_RH(-y) * Rz_RH(-z).
     inline Quaternion BuildInvMarkerQuaternion(const Float3& a_eulerXYZRadians)
     {
-        const auto qx = QuaternionFromAxisAngle({1.0f, 0.0f, 0.0f}, a_eulerXYZRadians.x);
-        const auto qy = QuaternionFromAxisAngle({0.0f, 1.0f, 0.0f}, a_eulerXYZRadians.y);
-        const auto qz = QuaternionFromAxisAngle({0.0f, 0.0f, 1.0f}, a_eulerXYZRadians.z);
+        const auto qx = QuaternionFromAxisAngle({1.0f, 0.0f, 0.0f}, -a_eulerXYZRadians.x);
+        const auto qy = QuaternionFromAxisAngle({0.0f, 1.0f, 0.0f}, -a_eulerXYZRadians.y);
+        const auto qz = QuaternionFromAxisAngle({0.0f, 0.0f, 1.0f}, -a_eulerXYZRadians.z);
         return NormalizeQuaternion(MultiplyQuaternion(MultiplyQuaternion(qx, qy), qz));
     }
 
     // Orientacao natural para itens de mods sem BSInvMarker: mantem +Z para cima
-    // com leve inclinacao estetica (12 deg em X, -15 deg em Z), sem tombar o modelo.
+    // com leve inclinacao estetica (12 deg em X, 15 deg em Z), sem tombar o modelo.
     inline Quaternion BuildDefaultInventoryQuaternion()
     {
         constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
-        return BuildInvMarkerQuaternion({12.0f * kDegToRad, 0.0f, -15.0f * kDegToRad});
+        return BuildInvMarkerQuaternion({12.0f * kDegToRad, 0.0f, 15.0f * kDegToRad});
     }
 
-    // Rotacao livre 360 graus em espaco de tela (mesmo sentido do Skyrim vanilla):
-    // +deltaX (mouse para direita) gira a frente do item para a direita (+Z_screen);
-    // +deltaY (mouse para baixo) puxa o topo do item para frente/baixo (+X_screen).
+    // Rotacao livre 360 graus em espaco de tela (mesmo sentido do Skyrim vanilla,
+    // com camera em +Y olhando -Y, direita = -X, cima = +Z):
+    // +deltaX (mouse para direita) gira a frente (+Y) para a direita (-X) via Rz(+deltaX);
+    // +deltaY (mouse para baixo) gira a frente (+Y) para baixo (-Z) e o topo (+Z) para +Y via Rx(-deltaY).
     inline Quaternion ApplyScreenTrackballDelta(const Quaternion& a_current,
                                                 float a_deltaXRadians,
                                                 float a_deltaYRadians)
     {
         const auto qYaw = QuaternionFromAxisAngle({0.0f, 0.0f, 1.0f}, a_deltaXRadians);
-        const auto qPitch = QuaternionFromAxisAngle({1.0f, 0.0f, 0.0f}, a_deltaYRadians);
+        const auto qPitch = QuaternionFromAxisAngle({-1.0f, 0.0f, 0.0f}, a_deltaYRadians);
         const auto qDelta = MultiplyQuaternion(qPitch, qYaw);
         return NormalizeQuaternion(MultiplyQuaternion(qDelta, a_current));
     }
 
-    // Converte a orientacao 3D do item no referencial fixo do Inventory3DManager
-    // (camera em -Y olhando para +Y, +X direita, +Z cima) para a CameraBasis equivalente,
-    // mantendo as luzes de estudio fixas em relacao a tela.
+    // Converte a orientacao 3D do item no referencial oficial do Inventory3DManager
+    // do Skyrim (camera em +Y olhando para -Y, -X direita, +Z cima) para a CameraBasis
+    // equivalente, mantendo as luzes de estudio fixas em relacao a tela.
     inline CameraBasis CameraBasisFromObjectOrientation(const Quaternion& a_objectOrientation)
     {
         const auto inv = ConjugateQuaternion(NormalizeQuaternion(a_objectOrientation));
         return {
-            .eyeDirection = Normalize(RotateVector(inv, {0.0f, -1.0f, 0.0f})),
-            .right = Normalize(RotateVector(inv, {1.0f, 0.0f, 0.0f})),
+            .eyeDirection = Normalize(RotateVector(inv, {0.0f, 1.0f, 0.0f})),
+            .right = Normalize(RotateVector(inv, {-1.0f, 0.0f, 0.0f})),
             .up = Normalize(RotateVector(inv, {0.0f, 0.0f, 1.0f})),
         };
     }
